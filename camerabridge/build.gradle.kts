@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.mav.cameranativebridge"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         minSdk = 24          // camera_bridge + libgphoto2 need nothing newer

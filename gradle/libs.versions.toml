@@ -1,15 +1,20 @@
 # LensLink version catalog — pinned combinations verified against
 # Google's Maven / Gradle Plugin Portal compatibility tables (Oct 2026).
 #
-#   AGP 8.13.x   -> requires Gradle >= 8.13   (wrapper: 8.14.3)
-#   KGP 2.2.21   -> tested AST range covers AGP 8.x / Gradle 8.x
-#   Compose BOM 2026.09.00 -> compose 1.12.1 / material3 1.4.0
+#   AGP 9.1.0    -> requires Gradle >= 9.1.0 & JDK 17  (wrapper: 9.1.0)
+#   The Compose stack below (BOM 2026.09.00 -> compose 1.12.1 and
+#   material3 1.5.0-beta02) declares minCompileSdk=37 + minAGP=9.1.0
+#   in its AAR metadata — that is why compileSdk is 37.
+#   KGP 2.3.21  -> first Kotlin release line tested against Gradle 9.x / AGP 9.x
+#   Built-in Kotlin and the new AGP 9 DSL are opted out for now
+#   (gradle.properties: android.builtInKotlin=false, android.newDsl=false);
+#   migrate before AGP 10 (which removes the opt-out).
 #   material3 1.5.0-beta02 is pinned explicitly for
 #   androidx.compose.material3.MaterialShapes (Material 3 Expressive).
 
 [versions]
-agp            = "8.13.2"
-kotlin         = "2.2.21"
+agp            = "9.1.0"
+kotlin         = "2.3.21"
 coroutines     = "1.10.2"
 compose-bom    = "2026.09.00"
 material3      = "1.5.0-beta02"
@@ -19,9 +24,9 @@ coreKtx        = "1.17.0"
 appcompat      = "1.7.1"
 
 # camerabridge
-gradleWrapper  = "8.14.3"
+gradleWrapper  = "9.1.0"
 ndk            = "27.0.12077973"
-compileSdk     = "36"
+compileSdk     = "37"
 minSdk         = "26"
 jvmTarget      = "17"
 

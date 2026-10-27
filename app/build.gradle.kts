@@ -10,12 +10,12 @@ plugins {
 
 android {
     namespace = "com.mav.lenslink"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.mav.lenslink"
         minSdk = 26
-        targetSdk = 36
+        targetSdk = 37
         versionCode = 1
         versionName = "1.0.0"
     }
