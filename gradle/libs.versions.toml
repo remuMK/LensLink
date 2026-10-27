@@ -1,0 +1,48 @@
+# LensLink version catalog — pinned combinations verified against
+# Google's Maven / Gradle Plugin Portal compatibility tables (Oct 2026).
+#
+#   AGP 8.13.x   -> requires Gradle >= 8.13   (wrapper: 8.14.3)
+#   KGP 2.2.21   -> tested AST range covers AGP 8.x / Gradle 8.x
+#   Compose BOM 2026.09.00 -> compose 1.12.1 / material3 1.4.0
+#   material3 1.5.0-beta02 is pinned explicitly for
+#   androidx.compose.material3.MaterialShapes (Material 3 Expressive).
+
+[versions]
+agp            = "8.13.2"
+kotlin         = "2.2.21"
+coroutines     = "1.10.2"
+compose-bom    = "2026.09.00"
+material3      = "1.5.0-beta02"
+activityCompose = "1.11.0"
+lifecycle      = "2.9.4"
+coreKtx        = "1.17.0"
+appcompat      = "1.7.1"
+
+# camerabridge
+gradleWrapper  = "8.14.3"
+ndk            = "27.0.12077973"
+compileSdk     = "36"
+minSdk         = "26"
+jvmTarget      = "17"
+
+[libraries]
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+androidx-core-ktx          = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
+androidx-appcompat         = { module = "androidx.appcompat:appcompat", version.ref = "appcompat" }
+androidx-activity-compose  = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
+androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }
+androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+compose-bom                = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
+compose-ui                 = { module = "androidx.compose.ui:ui" }
+compose-ui-graphics        = { module = "androidx.compose.ui:ui-graphics" }
+compose-ui-tooling         = { module = "androidx.compose.ui:ui-tooling" }
+compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+compose-foundation         = { module = "androidx.compose.foundation:foundation" }
+compose-material3          = { module = "androidx.compose.material3:material3", version.ref = "material3" }
+compose-material-icons     = { module = "androidx.compose.material:material-icons-extended" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+android-library     = { id = "com.android.library", version.ref = "agp" }
+kotlin-android      = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose      = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

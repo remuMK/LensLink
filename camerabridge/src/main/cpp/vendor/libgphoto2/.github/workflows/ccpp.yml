@@ -1,0 +1,90 @@
+# If Github does not properly accept this YAML file, try
+# https://rhysd.github.io/actionlint/ from
+# https://github.com/rhysd/actionlint.
+
+name: 'CI build'
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+env:
+  LC_ALL: C
+
+jobs:
+  build:
+
+    runs-on: ${{ matrix.os }}
+
+    name: '${{ matrix.os }}'
+
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        include:
+           - os: ubuntu-latest
+             ldd: 'ldd'
+             iolibs: 'disk,vusb,ptpip,serial,libusb1,usb,usbdiskdirect,usbscsi'
+           - os: macos-latest
+             ldd: 'otool -L'
+             iolibs: 'disk,vusb,ptpip,serial,libusb1,usb'
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.0
+
+      - name: 'Update software database (Linux)'
+        if: runner.os == 'Linux'
+        run: sudo apt-get update
+
+      - name: 'Update software database (macOS)'
+        if: runner.os == 'macOS'
+        run: brew update
+
+      - name: 'Work around apt-get 3rd party repo libgd-dev dependency (Linux)'
+        if: runner.os == 'Linux'
+        run: sudo apt-get remove nginx libgd3
+
+      - name: 'Install build requirements (Linux)'
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y python3-pip ninja-build gettext libusb-1.0-0-dev libcurl4-openssl-dev libgd-dev libltdl-dev
+          pip3 install --user meson==1.4.2
+
+      - name: 'Install build requirements (macOS)'
+        if: runner.os == 'macOS'
+        run: brew install meson gd gettext libexif libtool libusb
+
+      - name: 'OS specific build flags (Linux)'
+        if: runner.os == 'Linux'
+        run: echo CPPFLAGS="" >> $GITHUB_ENV
+
+      - name: 'OS specific build flags (macOS)'
+        if: runner.os == 'macOS'
+        run: |
+          echo CPPFLAGS="-I$(brew --prefix)/include" >> $GITHUB_ENV
+          echo LDFLAGS="-L$(brew --prefix)/lib" >> $GITHUB_ENV
+
+      - name: 'Setup'
+        run: meson setup _build -Diolibs=${{ matrix.iolibs }} --prefix=$PWD/__prefix -Dlibdir=$PWD/__prefix/lib
+
+      - name: 'Compile'
+        run: meson compile -C _build
+
+      - name: 'Test'
+        run: meson test --print-errorlogs --no-suite=no-ci -C _build
+
+      - name: 'Install'
+        run: meson install -C _build
+
+      - name: 'Build and run example libgphoto2 frontend (ambs-lgp2-frontend)'
+        run: |
+          export PKG_CONFIG_PATH="$PWD/__prefix/lib/pkgconfig"
+          export LD_LIBRARY_PATH="$PWD/__prefix/lib"
+          cd examples/ambs-lgp2-frontend
+          meson setup _build --prefix="$PWD/__pref"
+          meson install -C _build
+          ${{ matrix.ldd }} __pref/bin/ambs-lgp2-frontend
+          __pref/bin/ambs-lgp2-frontend

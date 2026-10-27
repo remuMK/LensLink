@@ -1,0 +1,31 @@
+# -*- Makefile-automake -*-
+
+EXTRA_DIST              += %reldir%/ChangeLog
+EXTRA_DIST              += %reldir%/ChangeLog.benq
+EXTRA_DIST              += %reldir%/ChangeLog.gsmart
+EXTRA_DIST              += %reldir%/ChangeLog.spca504_flash
+EXTRA_DIST              += %reldir%/lsusb-v
+
+EXTRA_DIST              += %reldir%/README.spca50x
+camlibdoc_DATA          += %reldir%/README.spca50x
+
+
+EXTRA_LTLIBRARIES       += spca50x.la
+
+spca50x_la_SOURCES       =
+spca50x_la_SOURCES      += %reldir%/spca50x.c
+spca50x_la_SOURCES      += %reldir%/spca50x.h
+spca50x_la_SOURCES      += %reldir%/spca50x-flash.c
+spca50x_la_SOURCES      += %reldir%/spca50x-flash.h
+spca50x_la_SOURCES      += %reldir%/spca50x-sdram.c
+spca50x_la_SOURCES      += %reldir%/spca50x-sdram.h
+spca50x_la_SOURCES      += %reldir%/library.c
+spca50x_la_SOURCES      += %reldir%/spca50x-jpeg-header.h
+spca50x_la_SOURCES      += %reldir%/spca50x-registers.h
+spca50x_la_SOURCES      += %reldir%/spca50x-avi-header.h
+
+spca50x_la_CFLAGS        = $(camlib_cflags)
+spca50x_la_CPPFLAGS      = $(camlib_cppflags)
+spca50x_la_DEPENDENCIES  = $(camlib_dependencies)
+spca50x_la_LDFLAGS       = $(camlib_ldflags)
+spca50x_la_LIBADD        = $(camlib_libadd)

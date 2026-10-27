@@ -1,0 +1,58 @@
+# -*- Makefile-automake -*-
+
+
+konicalocalizationdir = $(datadir)/$(PACKAGE)/$(VERSION)/konica
+
+dist_konicalocalization_DATA =
+dist_konicalocalization_DATA += %reldir%/localization/english
+dist_konicalocalization_DATA += %reldir%/localization/french
+dist_konicalocalization_DATA += %reldir%/localization/german
+dist_konicalocalization_DATA += %reldir%/localization/japanese
+dist_konicalocalization_DATA += %reldir%/localization/korean
+dist_konicalocalization_DATA += %reldir%/localization/spanish
+
+konica_defs = -DLOCALIZATION=\"$(konicalocalizationdir)\"
+
+
+EXTRA_DIST          += %reldir%/COPYING
+EXTRA_DIST          += %reldir%/ChangeLog
+EXTRA_DIST          += %reldir%/EXPERTS
+EXTRA_DIST          += %reldir%/TODO
+EXTRA_DIST          += %reldir%/qm150.txt
+
+EXTRA_DIST          += %reldir%/README.konica
+camlibdoc_DATA      += %reldir%/README.konica
+
+
+EXTRA_LTLIBRARIES       += konica.la
+
+konica_la_SOURCES        =
+konica_la_SOURCES       += %reldir%/lowlevel.c
+konica_la_SOURCES       += %reldir%/lowlevel.h
+konica_la_SOURCES       += %reldir%/konica.c
+konica_la_SOURCES       += %reldir%/konica.h
+konica_la_SOURCES       += %reldir%/library.c
+
+konica_la_CFLAGS        = $(camlib_cflags)
+konica_la_CPPFLAGS      = $(camlib_cppflags)
+konica_la_DEPENDENCIES  = $(camlib_dependencies)
+konica_la_LDFLAGS       = $(camlib_ldflags)
+konica_la_LIBADD        = $(camlib_libadd)
+
+konica_la_CPPFLAGS     += $(konica_defs)
+
+
+EXTRA_LTLIBRARIES            += konica_qm150.la
+
+konica_qm150_la_SOURCES       = %reldir%/qm150.c
+
+konica_qm150_la_CFLAGS        = $(camlib_cflags)
+konica_qm150_la_CPPFLAGS      = $(camlib_cppflags)
+konica_qm150_la_DEPENDENCIES  = $(camlib_dependencies)
+konica_qm150_la_LDFLAGS       = $(camlib_ldflags)
+konica_qm150_la_LIBADD        = $(camlib_libadd)
+
+konica_qm150_la_CPPFLAGS     += $(konica_defs)
+
+konica_qm150_la_CPPFLAGS     += $(LIBEXIF_CFLAGS)
+konica_qm150_la_LIBADD       += $(LIBEXIF_LIBS)

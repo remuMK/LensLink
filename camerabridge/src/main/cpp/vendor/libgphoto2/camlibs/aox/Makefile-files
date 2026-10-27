@@ -1,0 +1,20 @@
+# -*- Makefile-automake -*-
+
+EXTRA_DIST          += %reldir%/ChangeLog
+
+EXTRA_DIST          += %reldir%/README.aox
+camlibdoc_DATA      += %reldir%/README.aox
+
+
+EXTRA_LTLIBRARIES   += aox.la
+
+aox_la_SOURCES       =
+aox_la_SOURCES      += %reldir%/library.c
+aox_la_SOURCES      += %reldir%/aox.c
+aox_la_SOURCES      += %reldir%/aox.h
+
+aox_la_CFLAGS        = $(camlib_cflags)
+aox_la_CPPFLAGS      = $(camlib_cppflags)
+aox_la_DEPENDENCIES  = $(camlib_dependencies)
+aox_la_LDFLAGS       = $(camlib_ldflags)
+aox_la_LIBADD        = $(camlib_libadd)

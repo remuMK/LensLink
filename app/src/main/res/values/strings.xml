@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LensLink</string>
+    <string name="notif_channel_camera">Camera session</string>
+    <string name="notif_camera_title">LensLink camera link</string>
+    <string name="notif_camera_text">Live camera connection is active</string>
+</resources>

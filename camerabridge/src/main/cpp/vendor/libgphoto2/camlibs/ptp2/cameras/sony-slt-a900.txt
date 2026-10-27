@@ -1,0 +1,91 @@
+Camera summary:
+Manufacturer: Sony Corporation
+Model: DSLR-A900
+  Version: 01.0000
+
+Capture Formats:
+Display Formats: Script, JPEG, Unknown(b101)
+
+Device Capabilities:
+	File Download, No File Deletion, File Upload
+	No Image Capture, No Open Capture, No vendor specific capture
+
+Storage Devices Summary:
+store_00010001:
+	StorageDescription: None
+	VolumeLabel: None
+	Storage Type: Removable RAM (memory card)
+	Filesystemtype: Generic Hierarchical
+	Access Capability: Read-Write
+	Maximum Capability: 32009093120 (30526 MB)
+	Free Space (Bytes): 31046238208 (29608 MB)
+	Free Space (Images): -1
+
+Device Property Summary:
+
+Device info:
+Manufacturer: Sony Corporation
+  Model: DSLR-A900
+  device version: 01.0000
+  serial number: '(null)'
+Vendor extension ID: 0x00000011
+Vendor extension version: 100
+Vendor extension description: Sony PTP Extensions
+Functional Mode: 0x0000
+PTP Standard Version: 100
+Supported operations:
+  0x1001
+  0x1002
+  0x1003
+  0x1004
+  0x1005
+  0x1006
+  0x1007
+  0x1008
+  0x1009
+  0x100a
+  0x101b
+  0x9201
+  0x9202
+  0x9203
+  0x9204
+  0x9205
+  0x9206
+  0x9207
+  0x9208
+Events Supported:
+  0x4001
+  0x4004
+  0x4005
+  0xc201
+  0xc202
+  0xc203
+Device Properties Supported:
+
+sony code: 5004
+sony code: 5005
+sony code: 5007
+sony code: 500a
+sony code: 500b
+sony code: 500c
+sony code: 500e
+sony code: 5010
+sony code: 5013
+sony code: d200
+sony code: d201
+sony code: d203
+sony code: d20d
+sony code: d20e
+sony code: d20f
+sony code: d210
+sony code: d211
+sony code: d212
+sony code: d213
+sony code: d214
+sony code: d215
+sony code: d216
+sony code: d217
+sony code: d218
+sony code: d219
+sony code: d21a
+

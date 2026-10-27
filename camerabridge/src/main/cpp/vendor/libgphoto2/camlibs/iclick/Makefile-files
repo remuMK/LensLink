@@ -1,0 +1,20 @@
+# -*- Makefile-automake -*-
+
+EXTRA_DIST             += %reldir%/ChangeLog
+
+EXTRA_DIST             += %reldir%/README.iclick
+camlibdoc_DATA         += %reldir%/README.iclick
+
+
+EXTRA_LTLIBRARIES      += iclick.la
+
+iclick_la_SOURCES       =
+iclick_la_SOURCES      += %reldir%/library.c
+iclick_la_SOURCES      += %reldir%/iclick.c
+iclick_la_SOURCES      += %reldir%/iclick.h
+
+iclick_la_CFLAGS        = $(camlib_cflags)
+iclick_la_CPPFLAGS      = $(camlib_cppflags)
+iclick_la_DEPENDENCIES  = $(camlib_dependencies)
+iclick_la_LDFLAGS       = $(camlib_ldflags)
+iclick_la_LIBADD        = $(camlib_libadd)

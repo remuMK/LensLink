@@ -1,0 +1,18 @@
+# -*- Makefile-automake -*-
+
+EXTRA_DIST                     += %reldir%/README.toshiba-pdrm11
+camlibdoc_DATA                 += %reldir%/README.toshiba-pdrm11
+
+
+EXTRA_LTLIBRARIES              += toshiba_pdrm11.la
+
+toshiba_pdrm11_la_SOURCES       =
+toshiba_pdrm11_la_SOURCES      += %reldir%/library.c
+toshiba_pdrm11_la_SOURCES      += %reldir%/pdrm11.c
+toshiba_pdrm11_la_SOURCES      += %reldir%/pdrm11.h
+
+toshiba_pdrm11_la_CFLAGS        = $(camlib_cflags)
+toshiba_pdrm11_la_CPPFLAGS      = $(camlib_cppflags)
+toshiba_pdrm11_la_DEPENDENCIES  = $(camlib_dependencies)
+toshiba_pdrm11_la_LDFLAGS       = $(camlib_ldflags)
+toshiba_pdrm11_la_LIBADD        = $(camlib_libadd)

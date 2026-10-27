@@ -1,0 +1,21 @@
+# -*- Makefile-automake -*-
+
+EXTRA_DIST            += %reldir%/ChangeLog
+
+EXTRA_DIST            += %reldir%/README.sonix
+camlibdoc_DATA        += %reldir%/README.sonix
+
+
+EXTRA_LTLIBRARIES     += sonix.la
+
+sonix_la_SOURCES       =
+sonix_la_SOURCES      += %reldir%/library.c
+sonix_la_SOURCES      += %reldir%/sonix.c
+sonix_la_SOURCES      += %reldir%/sonix.h
+sonix_la_SOURCES      += %reldir%/sakar-avi-header.h
+
+sonix_la_CFLAGS        = $(camlib_cflags)
+sonix_la_CPPFLAGS      = $(camlib_cppflags)
+sonix_la_DEPENDENCIES  = $(camlib_dependencies)
+sonix_la_LDFLAGS       = $(camlib_ldflags)
+sonix_la_LIBADD        = $(camlib_libadd)

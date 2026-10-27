@@ -1,0 +1,18 @@
+# -*- Makefile-automake -*-
+
+EXTRA_DIST                  += %reldir%/ChangeLog
+
+
+EXTRA_LTLIBRARIES           += kodak_dc120.la
+
+kodak_dc120_la_SOURCES       =
+kodak_dc120_la_SOURCES      += %reldir%/dc120.c
+kodak_dc120_la_SOURCES      += %reldir%/dc120.h
+kodak_dc120_la_SOURCES      += %reldir%/library.c
+kodak_dc120_la_SOURCES      += %reldir%/library.h
+
+kodak_dc120_la_CFLAGS        = $(camlib_cflags)
+kodak_dc120_la_CPPFLAGS      = $(camlib_cppflags)
+kodak_dc120_la_DEPENDENCIES  = $(camlib_dependencies)
+kodak_dc120_la_LDFLAGS       = $(camlib_ldflags)
+kodak_dc120_la_LIBADD        = $(camlib_libadd)

@@ -1,0 +1,39 @@
+# -*- Makefile-automake -*-
+
+# SUBDIRS = coolshot l859
+
+EXTRA_DIST                       += %reldir%/ChangeLog
+
+EXTRA_DIST                       += %reldir%/README.panasonic
+camlibdoc_DATA                   += %reldir%/README.panasonic
+
+
+EXTRA_LTLIBRARIES                += panasonic_dc1000.la
+
+panasonic_dc1000_la_SOURCES       =
+panasonic_dc1000_la_SOURCES      += %reldir%/dc1000.c
+panasonic_dc1000_la_SOURCES      += %reldir%/dc1000.h
+panasonic_dc1000_la_SOURCES      += %reldir%/dc.c
+panasonic_dc1000_la_SOURCES      += %reldir%/dc.h
+
+panasonic_dc1000_la_CFLAGS        = $(camlib_cflags)
+panasonic_dc1000_la_CPPFLAGS      = $(camlib_cppflags)
+panasonic_dc1000_la_DEPENDENCIES  = $(camlib_dependencies)
+panasonic_dc1000_la_LDFLAGS       = $(camlib_ldflags)
+panasonic_dc1000_la_LIBADD        = $(camlib_libadd)
+
+
+EXTRA_LTLIBRARIES                += panasonic_dc1580.la
+
+panasonic_dc1580_la_SOURCES       =
+panasonic_dc1580_la_SOURCES      += %reldir%/dc1580.c
+panasonic_dc1580_la_SOURCES      += %reldir%/dc1580.h
+panasonic_dc1580_la_SOURCES      += %reldir%/dc.c
+panasonic_dc1580_la_SOURCES      += %reldir%/dc.h
+panasonic_dc1580_la_SOURCES      += %reldir%/dc1000.h
+
+panasonic_dc1580_la_CFLAGS        = $(camlib_cflags)
+panasonic_dc1580_la_CPPFLAGS      = $(camlib_cppflags)
+panasonic_dc1580_la_DEPENDENCIES  = $(camlib_dependencies)
+panasonic_dc1580_la_LDFLAGS       = $(camlib_ldflags)
+panasonic_dc1580_la_LIBADD        = $(camlib_libadd)

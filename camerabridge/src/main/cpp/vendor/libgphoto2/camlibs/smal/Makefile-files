@@ -1,0 +1,21 @@
+# -*- Makefile-automake -*-
+
+EXTRA_DIST           += %reldir%/ChangeLog
+
+EXTRA_DIST           += %reldir%/README.smal
+camlibdoc_DATA       += %reldir%/README.smal
+
+
+EXTRA_LTLIBRARIES    += smal.la
+
+smal_la_SOURCES       =
+smal_la_SOURCES      += %reldir%/smal.c
+smal_la_SOURCES      += %reldir%/smal.h
+smal_la_SOURCES      += %reldir%/ultrapocket.c
+smal_la_SOURCES      += %reldir%/ultrapocket.h
+
+smal_la_CFLAGS        = $(camlib_cflags)
+smal_la_CPPFLAGS      = $(camlib_cppflags)
+smal_la_DEPENDENCIES  = $(camlib_dependencies)
+smal_la_LDFLAGS       = $(camlib_ldflags)
+smal_la_LIBADD        = $(camlib_libadd)

@@ -1,0 +1,21 @@
+# -*- Makefile-automake -*-
+
+EXTRA_DIST                 += %reldir%/ChangeLog
+
+EXTRA_DIST                 += %reldir%/README.sonydscf1
+camlibdoc_DATA             += %reldir%/README.sonydscf1
+
+
+EXTRA_LTLIBRARIES          += sony_dscf1.la
+
+sony_dscf1_la_SOURCES       =
+sony_dscf1_la_SOURCES      += %reldir%/command.c
+sony_dscf1_la_SOURCES      += %reldir%/command.h
+sony_dscf1_la_SOURCES      += %reldir%/sonydscf1.c
+sony_dscf1_la_SOURCES      += %reldir%/pmp.h
+
+sony_dscf1_la_CFLAGS        = $(camlib_cflags)
+sony_dscf1_la_CPPFLAGS      = $(camlib_cppflags)
+sony_dscf1_la_DEPENDENCIES  = $(camlib_dependencies)
+sony_dscf1_la_LDFLAGS       = $(camlib_ldflags)
+sony_dscf1_la_LIBADD        = $(camlib_libadd)

@@ -1,0 +1,28 @@
+# -*- Makefile-automake -*-
+
+EXTRA_DIST           += %reldir%/ChangeLog
+EXTRA_DIST           += %reldir%/jd11.html
+
+
+EXTRA_LTLIBRARIES    += jd11.la
+
+jd11_la_SOURCES       =
+jd11_la_SOURCES      += %reldir%/jd11.c
+jd11_la_SOURCES      += %reldir%/serial.h
+jd11_la_SOURCES      += %reldir%/serial.c
+jd11_la_SOURCES      += %reldir%/decomp.h
+jd11_la_SOURCES      += %reldir%/decomp.c
+
+jd11_la_CFLAGS        = $(camlib_cflags)
+jd11_la_CPPFLAGS      = $(camlib_cppflags)
+jd11_la_DEPENDENCIES  = $(camlib_dependencies)
+jd11_la_LDFLAGS       = $(camlib_ldflags)
+jd11_la_LIBADD        = $(camlib_libadd)
+
+if HAVE_LIBTIFF
+jd11_la_SOURCES      += %reldir%/dng.h
+jd11_la_SOURCES      += %reldir%/dng.c
+
+jd11_la_CPPFLAGS     += $(LIBTIFF_CFLAGS)
+jd11_la_LIBADD       += $(LIBTIFF_LIBS)
+endif

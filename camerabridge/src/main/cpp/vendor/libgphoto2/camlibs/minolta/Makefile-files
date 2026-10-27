@@ -1,0 +1,3 @@
+# -*- Makefile-automake -*-
+
+EXTRA_DIST += %reldir%/NEWER_MINOLTAS

@@ -1,0 +1,140 @@
+# LensLink — Android CI
+#
+# Builds the app (and the :camerabridge AAR with the cross-compiled
+# libgphoto2/libusb stack) on GitHub-hosted runners. The NDK/CMake pin
+# (27.0.12077973 / 3.22.1) is requested by AGP and auto-installed.
+#
+# Optional signed release: provide the repo secrets
+#   KEYSTORE_BASE64      — base64 of a JKS/PKCS12 keystore
+#   KEYSTORE_PASSWORD    — keystore password
+#   KEY_ALIAS            — signing key alias
+#   KEY_PASSWORD         — key password (defaults to keystore password)
+# When they are set, :app:assembleRelease produces a signed APK;
+# otherwise the release APK stays unsigned.
+
+name: android
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (Ubuntu · JDK 17)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle (caching)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/master' }}
+
+      - name: Decode signing keystore (optional)
+        id: keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/release.keystore"
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build (native AAR + app, lint, debug & release)
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          # Keep native CMake output readable when something breaks.
+          GRADLE_OPTS: "-Dorg.gradle.logging.level=lifecycle"
+        run: |
+          chmod +x ./gradlew
+          ARGS=(
+            :camerabridge:assembleRelease
+            :app:assembleDebug
+            :app:assembleRelease
+            :app:lintDebug
+            --stacktrace
+          )
+          if [ "${{ steps.keystore.outputs.present }}" = "true" ]; then
+            ARGS+=(
+              -PKEYSTORE_FILE="$RUNNER_TEMP/release.keystore"
+              -PKEYSTORE_PASSWORD="$KEYSTORE_PASSWORD"
+              -PKEY_ALIAS="$KEY_ALIAS"
+              -PKEY_PASSWORD="${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
+            )
+          fi
+          ./gradlew "${ARGS[@]}"
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: lenslink-apks
+          if-no-files-found: error
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/release/*.apk
+
+      - name: Upload AAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: camerabridge-aar
+          if-no-files-found: error
+          path: |
+            camerabridge/build/outputs/aar/*.aar
+
+      - name: Upload lint report (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          if-no-files-found: ignore
+          path: |
+            app/build/reports/lint-results-debug.html
+            app/build/reports/lint-results-debug.xml
+
+  release:
+    name: Attach APKs to GitHub release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download built APKs
+        uses: actions/download-artifact@v4
+        with:
+          name: lenslink-apks
+          path: apks
+
+      - name: Create GitHub release with APKs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "LensLink ${GITHUB_REF_NAME#v}" \
+            --generate-notes \
+            apks/*

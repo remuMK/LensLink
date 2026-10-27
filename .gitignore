@@ -1,0 +1,21 @@
+# LensLink build outputs / Gradle
+.gradle/
+build/
+**/build/
+captures/
+local.properties
+.externalNativeBuild/
+.cxx/
+*.keystore
+!debug.keystore
+
+# Kotlin / Android Studio
+.idea/
+*.iml
+.DS_Store
+kotlin-native-prebuilt/
+
+# CI temp / artifacts
+*.apk
+*.aab
+proguard-mapping.txt

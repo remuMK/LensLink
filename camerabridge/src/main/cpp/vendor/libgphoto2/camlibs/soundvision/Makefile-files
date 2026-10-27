@@ -1,0 +1,24 @@
+# -*- Makefile-automake -*-
+
+EXTRA_DIST                  += %reldir%/BUGS
+EXTRA_DIST                  += %reldir%/ChangeLog
+
+EXTRA_DIST                  += %reldir%/README.soundvision
+camlibdoc_DATA              += %reldir%/README.soundvision
+
+
+EXTRA_LTLIBRARIES           += soundvision.la
+
+soundvision_la_SOURCES       =
+soundvision_la_SOURCES      += %reldir%/soundvision.c
+soundvision_la_SOURCES      += %reldir%/agfa_cl18.c
+soundvision_la_SOURCES      += %reldir%/tiger_fastflicks.c
+soundvision_la_SOURCES      += %reldir%/commands.c
+soundvision_la_SOURCES      += %reldir%/commands.h
+soundvision_la_SOURCES      += %reldir%/soundvision.h
+
+soundvision_la_CFLAGS        = $(camlib_cflags)
+soundvision_la_CPPFLAGS      = $(camlib_cppflags)
+soundvision_la_DEPENDENCIES  = $(camlib_dependencies)
+soundvision_la_LDFLAGS       = $(camlib_ldflags)
+soundvision_la_LIBADD        = $(camlib_libadd)

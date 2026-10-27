@@ -1,0 +1,20 @@
+# -*- Makefile-automake -*-
+
+EXTRA_DIST             += %reldir%/ChangeLog
+
+EXTRA_DIST             += %reldir%/README.jamcam
+camlibdoc_DATA         += %reldir%/README.jamcam
+
+
+EXTRA_LTLIBRARIES      += jamcam.la
+
+jamcam_la_SOURCES       =
+jamcam_la_SOURCES      += %reldir%/jamcam.c
+jamcam_la_SOURCES      += %reldir%/library.c
+jamcam_la_SOURCES      += %reldir%/library.h
+
+jamcam_la_CFLAGS        = $(camlib_cflags)
+jamcam_la_CPPFLAGS      = $(camlib_cppflags)
+jamcam_la_DEPENDENCIES  = $(camlib_dependencies)
+jamcam_la_LDFLAGS       = $(camlib_ldflags)
+jamcam_la_LIBADD        = $(camlib_libadd)

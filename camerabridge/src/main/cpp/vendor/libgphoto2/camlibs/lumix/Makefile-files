@@ -1,0 +1,26 @@
+# -*- Makefile-automake -*-
+
+EXTRA_DIST            += %reldir%/README.lumix
+noinst_DATA           += %reldir%/README.lumix
+
+
+EXTRA_LTLIBRARIES     += lumix.la
+
+lumix_la_SOURCES       = %reldir%/lumix.c
+
+lumix_la_CFLAGS        = $(camlib_cflags)
+lumix_la_CPPFLAGS      = $(camlib_cppflags)
+lumix_la_DEPENDENCIES  = $(camlib_dependencies)
+lumix_la_LDFLAGS       = $(camlib_ldflags)
+lumix_la_LIBADD        = $(camlib_libadd)
+
+lumix_la_CFLAGS       += $(NO_UNUSED_CFLAGS)
+
+lumix_la_CFLAGS       += $(LIBCURL_CFLAGS)
+lumix_la_LIBADD       += $(LIBCURL_LIBS)
+
+lumix_la_CFLAGS       += $(LIBXML2_CFLAGS)
+lumix_la_LIBADD       += $(LIBXML2_LIBS)
+
+lumix_la_CFLAGS       += $(LIBWS232_CFLAGS)
+lumix_la_LIBADD       += $(LIBWS232_LIBS)

@@ -1,0 +1,28 @@
+# -*- Makefile-automake -*-
+
+EXTRA_DIST              += %reldir%/COPYING
+
+EXTRA_DIST              += %reldir%/README.minolta-dimagev
+camlibdoc_DATA          += %reldir%/README.minolta-dimagev
+
+
+EXTRA_LTLIBRARIES       += dimagev.la
+
+dimagev_la_SOURCES       =
+dimagev_la_SOURCES      += %reldir%/capture.c
+dimagev_la_SOURCES      += %reldir%/data.c
+dimagev_la_SOURCES      += %reldir%/delete.c
+dimagev_la_SOURCES      += %reldir%/dimagev.c
+dimagev_la_SOURCES      += %reldir%/dimagev.h
+dimagev_la_SOURCES      += %reldir%/download.c
+dimagev_la_SOURCES      += %reldir%/info.c
+dimagev_la_SOURCES      += %reldir%/packet.c
+dimagev_la_SOURCES      += %reldir%/status.c
+dimagev_la_SOURCES      += %reldir%/upload.c
+dimagev_la_SOURCES      += %reldir%/util.c
+
+dimagev_la_CFLAGS        = $(camlib_cflags)
+dimagev_la_CPPFLAGS      = $(camlib_cppflags)
+dimagev_la_DEPENDENCIES  = $(camlib_dependencies)
+dimagev_la_LDFLAGS       = $(camlib_ldflags)
+dimagev_la_LIBADD        = $(camlib_libadd)

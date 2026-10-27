@@ -1,0 +1,54 @@
+# -*- Makefile-automake -*-
+
+EXTRA_DIST           += %reldir%/ChangeLog
+EXTRA_DIST           += %reldir%/PTPIP.TXT
+EXTRA_DIST           += %reldir%/TESTPLAN.ptp2
+EXTRA_DIST           += %reldir%/TODO
+EXTRA_DIST           += %reldir%/canon-eos-olc.txt
+EXTRA_DIST           += %reldir%/ptp-pack.c
+EXTRA_DIST           += %reldir%/ptpip.html
+
+EXTRA_DIST           += %reldir%/README.ptp2
+camlibdoc_DATA       += %reldir%/README.ptp2
+
+
+EXTRA_LTLIBRARIES    += ptp2.la
+
+ptp2_la_SOURCES       =
+ptp2_la_SOURCES      += %reldir%/ptp.c
+ptp2_la_SOURCES      += %reldir%/ptp.h
+ptp2_la_SOURCES      += %reldir%/chdk_ptp.h
+ptp2_la_SOURCES      += %reldir%/chdk_live_view.h
+ptp2_la_SOURCES      += %reldir%/library.c
+ptp2_la_SOURCES      += %reldir%/usb.c
+ptp2_la_SOURCES      += %reldir%/ptp-bugs.h
+ptp2_la_SOURCES      += %reldir%/ptp-private.h
+ptp2_la_SOURCES      += %reldir%/ptpip.c
+ptp2_la_SOURCES      += %reldir%/config.c
+ptp2_la_SOURCES      += %reldir%/music-players.h
+ptp2_la_SOURCES      += %reldir%/device-flags.h
+ptp2_la_SOURCES      += %reldir%/olympus-wrap.c
+ptp2_la_SOURCES      += %reldir%/olympus-wrap.h
+ptp2_la_SOURCES      += %reldir%/chdk.c
+ptp2_la_SOURCES      += %reldir%/fujiptpip.c
+ptp2_la_SOURCES      += %reldir%/ptpip-private.h
+ptp2_la_SOURCES      += %reldir%/array.h
+
+ptp2_la_CFLAGS        = $(camlib_cflags)
+ptp2_la_CPPFLAGS      = $(camlib_cppflags)
+ptp2_la_DEPENDENCIES  = $(camlib_dependencies)
+ptp2_la_LDFLAGS       = $(camlib_ldflags)
+ptp2_la_LIBADD        = $(camlib_libadd)
+
+ptp2_la_CFLAGS       += -Wshadow
+
+ptp2_la_LIBADD       += $(LTLIBICONV)
+
+ptp2_la_CPPFLAGS     += $(LIBXML2_CFLAGS)
+ptp2_la_LIBADD       += $(LIBXML2_LIBS)
+
+ptp2_la_CPPFLAGS     += $(LIBJPEG_CFLAGS)
+ptp2_la_LIBADD       += $(LIBJPEG_LIBS)
+
+ptp2_la_CPPFLAGS     += $(LIBWS232_CFLAGS)
+ptp2_la_LIBADD       += $(LIBWS232_LIBS)

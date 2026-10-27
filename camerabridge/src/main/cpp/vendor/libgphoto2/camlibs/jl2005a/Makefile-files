@@ -1,0 +1,20 @@
+# -*- Makefile-automake -*-
+
+EXTRA_DIST              += %reldir%/ChangeLog
+
+EXTRA_DIST              += %reldir%/README.jl2005a
+camlibdoc_DATA          += %reldir%/README.jl2005a
+
+
+EXTRA_LTLIBRARIES       += jl2005a.la
+
+jl2005a_la_SOURCES       =
+jl2005a_la_SOURCES      += %reldir%/library.c
+jl2005a_la_SOURCES      += %reldir%/jl2005a.c
+jl2005a_la_SOURCES      += %reldir%/jl2005a.h
+
+jl2005a_la_CFLAGS        = $(camlib_cflags)
+jl2005a_la_CPPFLAGS      = $(camlib_cppflags)
+jl2005a_la_DEPENDENCIES  = $(camlib_dependencies)
+jl2005a_la_LDFLAGS       = $(camlib_ldflags)
+jl2005a_la_LIBADD        = $(camlib_libadd)
