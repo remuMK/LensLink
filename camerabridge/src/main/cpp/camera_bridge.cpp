@@ -55,6 +55,8 @@
 
 #include <gphoto2/gphoto2.h>
 #include <gphoto2/gphoto2-port.h>
+#include <gphoto2/gphoto2-port-result.h>
+#include <gphoto2/gphoto2-result.h>
 #include <gphoto2/gphoto2-version.h>
 
 #include <pthread.h>
@@ -70,6 +72,60 @@
 /* single global session, shared with camera_control.cpp through gp_session.h */
 gpbridge::CameraSession gpbridge::g_session;
 pthread_mutex_t gpbridge::g_session_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* ------------------------------------------------------------------------- */
+/* shared error/env helpers — declared in gp_session.h                        */
+/* ------------------------------------------------------------------------- */
+namespace gpbridge {
+
+/* throws a typed Java exception; if the class lookup itself fails (FindClass
+ * throwing), falls back to IllegalStateException so SOMETHING pending remains */
+void jniThrowImpl(JNIEnv *env, const char *cls, const char *msg)
+{
+	if (env == nullptr)
+		return;
+	jclass c = env->FindClass(cls ? cls : "java/lang/IllegalStateException");
+	if (c == nullptr)
+		/* FindClass already threw (bad name / broken runtime); clear nothing —
+		 * retry the always-present fallback instead */
+		c = env->FindClass("java/lang/IllegalStateException");
+	if (c != nullptr)
+		env->ThrowNew(c, msg != nullptr ? msg : "gphoto2 error");
+}
+
+void jniThrowFmt(JNIEnv *env, const char *cls, const char *fmt, ...)
+{
+	char msg[512];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(msg, sizeof(msg), fmt != nullptr ? fmt : "gphoto2 error", ap);
+	va_end(ap);
+	jniThrowImpl(env, cls, msg);
+}
+
+/* logs and maps a libgphoto2 error code onto a Java IllegalStateException */
+void gpThrow(JNIEnv *env, int ret, const char *what)
+{
+	if (ret >= GP_OK)
+		return;
+	const char *where = (what != nullptr) ? what : "gphoto2 call";
+	const char *reason = gp_result_as_string(ret);
+	LOGE("%s failed: %s (code %d)", where, reason, ret);
+	jniThrowFmt(env, "java/lang/IllegalStateException", "%s failed: %s (%d)",
+				where, reason, ret);
+}
+
+/* points libgphoto2's lt_dlopenext()-based io/camlib loader at the app's
+ * nativeLibraryDir (the AAR unpacks liblibusb1.so / libptp2.so there) */
+void setLibDirs(const char *nativeLibDir)
+{
+	if (nativeLibDir == nullptr || *nativeLibDir == '\0')
+		return;
+	setenv("IOLIBS",  nativeLibDir, 1);
+	setenv("CAMLIBS", nativeLibDir, 1);
+}
+
+} /* namespace gpbridge */
 
 namespace {
 
