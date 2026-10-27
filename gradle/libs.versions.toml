@@ -1,7 +1,7 @@
 # LensLink version catalog — pinned combinations verified against
 # Google's Maven / Gradle Plugin Portal compatibility tables (Oct 2026).
 #
-#   AGP 9.1.0    -> requires Gradle >= 9.1.0 & JDK 17  (wrapper: 9.1.0)
+#   AGP 9.1.0    -> requires Gradle >= 9.3.1 (wrapper: 9.3.1) & JDK 17
 #   The Compose stack below (BOM 2026.09.00 -> compose 1.12.1 and
 #   material3 1.5.0-beta02) declares minCompileSdk=37 + minAGP=9.1.0
 #   in its AAR metadata — that is why compileSdk is 37.
@@ -24,7 +24,7 @@ coreKtx        = "1.17.0"
 appcompat      = "1.7.1"
 
 # camerabridge
-gradleWrapper  = "9.1.0"
+gradleWrapper  = "9.3.1"
 ndk            = "27.0.12077973"
 compileSdk     = "37"
 minSdk         = "26"

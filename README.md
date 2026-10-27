@@ -30,7 +30,7 @@ bodies) on Android. Competitor-grade feature set:
 | UI           | Jetpack Compose (BOM 2026.09), Material 3 `1.5.0-beta02` for `MaterialShapes` |
 | Native       | libgphoto2 + libusb1 + libltdl, vendored under `camerabridge/src/main/cpp/vendor/` |
 | Bridge       | JNI (`libcamera_bridge.so`), PTP/IP transport via a `ptpip` iolib + the `ptp2` camlib |
-| Builds       | Gradle 9.1.0, AGP 9.1.0, JDK 17, NDK r27, minSdk 26, compile/target SDK 37 |
+| Builds       | Gradle 9.3.1, AGP 9.1.0, JDK 17, NDK r27, minSdk 26, compile/target SDK 37 |
 
 ## Modules
 
