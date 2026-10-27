@@ -1,18 +1,17 @@
 plugins {
     alias(libs.plugins.android.library)
-    alias(libs.plugins.kotlin.android)
 }
 
 android {
     namespace = "com.mav.cameranativebridge"
     compileSdk = 37
 
+    // AGP downloads this NDK on demand (licenses auto-accepted on CI).
+    ndkVersion = "27.0.12077973"
+
     defaultConfig {
         minSdk = 24          // camera_bridge + libgphoto2 need nothing newer
         consumerProguardFiles("consumer-rules.pro")
-
-        // AGP downloads this NDK on demand (licenses auto-accepted on CI).
-        ndkVersion = "27.0.12077973"
 
         ndk {
             abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))
@@ -31,12 +30,9 @@ android {
                 )
             }
         }
-
-        // bionic memcpy/strdup quirks show up as noise during builds
-        lint { abortOnError = false }
     }
 
-        /*
+    /*
      * The shared libraries produced by CMake are all packaged:
      *   libcamera_bridge.so   (JNI layer)
      *   libgphoto2.so / libgphoto2_port.so
@@ -59,9 +55,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
+    // With AGP 9 built-in Kotlin, the Kotlin jvmTarget defaults to
+    // compileOptions.targetCompatibility — nothing more to configure.
+
+    lint { abortOnError = false }
 }
 
 dependencies {

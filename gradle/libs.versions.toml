@@ -6,9 +6,10 @@
 #   material3 1.5.0-beta02) declares minCompileSdk=37 + minAGP=9.1.0
 #   in its AAR metadata — that is why compileSdk is 37.
 #   KGP 2.3.21  -> first Kotlin release line tested against Gradle 9.x / AGP 9.x
-#   Built-in Kotlin and the new AGP 9 DSL are opted out for now
-#   (gradle.properties: android.builtInKotlin=false, android.newDsl=false);
-#   migrate before AGP 10 (which removes the opt-out).
+#   AGP 9.1 built-in Kotlin + new DSL are used (AGP 9 defaults; mandatory
+#   in AGP 10): no org.jetbrains.kotlin.android plugin anywhere — the Kotlin
+#   compiler comes from AGP, and modules using Jetpack Compose additionally
+#   apply org.jetbrains.kotlin.plugin.compose (same version as KGP).
 #   material3 1.5.0-beta02 is pinned explicitly for
 #   androidx.compose.material3.MaterialShapes (Material 3 Expressive).
 
@@ -49,5 +50,4 @@ compose-material-icons     = { module = "androidx.compose.material:material-icon
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 android-library     = { id = "com.android.library", version.ref = "agp" }
-kotlin-android      = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose      = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
