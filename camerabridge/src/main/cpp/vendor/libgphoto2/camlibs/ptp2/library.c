@@ -3605,6 +3605,21 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 			}
 			C_PTP_REP_MSG (ptp_canon_getviewfinderimage (params, &data, &size),
 				       _("Canon get viewfinder image failed"));
+			{ /* LensLink: drain the polled EOS event queue. The
+			   * per-tick ptp_check_eos_events only ever APPENDS
+			   * (live view generates ~2 events/s — OLCInfo,
+			   * PropertyChanged); the queue was only drained at
+			   * capture-trigger time, growing past 1100 entries
+			   * within minutes. */
+				PTPCanonEOSEvent ev;
+				int drained = 0;
+				while (ptp_get_one_eos_event (params, &ev)) {
+					ptp_free_eos_event (&ev);
+					drained++;
+				}
+				if (drained > 32)
+					GP_LOG_E ("live view: drained %d queued EOS events", drained);
+			}
 			gp_file_append ( file, (char*)data, size );
 			free (data);
 			gp_file_set_mime_type (file, GP_MIME_JPEG);     /* always */
@@ -3755,6 +3770,19 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 				/* Poll for camera events, but just call
 				 * it once and do not drain the queue now */
 				C_PTP (ptp_check_eos_events (params));
+				/* LensLink: drain what we just polled — see
+				 * the legacy-path drain for why (unbounded
+				 * growth otherwise). */
+				{
+					PTPCanonEOSEvent ev;
+					int drained = 0;
+					while (ptp_get_one_eos_event (params, &ev)) {
+						ptp_free_eos_event (&ev);
+						drained++;
+					}
+					if (drained > 32)
+						GP_LOG_E ("live view: drained %d queued EOS events", drained);
+				}
 
 				ret = ptp_canon_eos_get_viewfinder_image_arg (params, arg1, &data, &size);
 				if ((ret == 0xa102) || (ret == PTP_RC_DeviceBusy)) { /* means "not there yet" ... so wait */
@@ -4664,7 +4692,11 @@ capturetriggered:
  * while the max shutterspeed is 30seconds, there is also postprocessing of 30seconds happening
  * in e.g. https://github.com/gphoto/libgphoto2/issues/503
  */
-#define EOS_CAPTURE_TIMEOUT (90*1000)
+/* LensLink: 15 s. Over WiFi the card-written object event arrives in
+ * 1-3 s; upstream's 90 s turned every capture whose object event never
+ * came into a ~90 s app freeze (the preview loop is paused and the
+ * native mutex held while this loop waits). */
+#define EOS_CAPTURE_TIMEOUT (15*1000)
 
 /* This is currently the capture method used by the EOS 400D
  * ... in development.
@@ -4709,8 +4741,11 @@ camera_canon_eos_capture (Camera *camera, CameraCaptureType type, CameraFilePath
 				continue; /* in loop ... do not poll while draining the queue */
 			case PTP_EOSEvent_ObjectTransfer: {
 				char buf[20];
-				GP_LOG_D ("object transfer requested: handle 0x%x, name %s, size %lu",
-							event.u.object.Handle, event.u.object.Filename, event.u.object.ObjectSize);
+				GP_LOG_E ("object transfer requested: handle 0x%x, name %s, size %lu, storage 0x%08x",
+						event.u.object.Handle,
+						event.u.object.Filename ? event.u.object.Filename : "(null)",
+						(unsigned long)event.u.object.ObjectSize,
+						event.u.object.StorageID);
 				if (!event.u.object.Filename)  {
 					sprintf (buf, "capt%04d.", params->capcnt++);
 					event.u.object.Filename = strdup(buf);
@@ -4724,7 +4759,9 @@ camera_canon_eos_capture (Camera *camera, CameraCaptureType type, CameraFilePath
 				gp_filesystem_reset (camera->fs);
 				break;
 			case PTP_EOSEvent_ObjectAdded: {
-				GP_LOG_D ("object added: handle 0x%x, name %s", event.u.object.Handle, event.u.object.Filename);
+				GP_LOG_E ("object added: handle 0x%x storage 0x%08x name %s",
+					  event.u.object.Handle, event.u.object.StorageID,
+					  event.u.object.Filename ? event.u.object.Filename : "(null)");
 				/* just add it to the filesystem, and return in CameraPath */
 
 				/* We have some form of objectinfo in event.u.object already, but we let the
@@ -4755,8 +4792,12 @@ camera_canon_eos_capture (Camera *camera, CameraCaptureType type, CameraFilePath
 		gp_context_idle (context);
 	} while (waiting_for_timeout (&back_off_wait, capture_start, EOS_CAPTURE_TIMEOUT));
 
-	if (oi.Handle == 0)
-		return GP_ERROR;
+	if (oi.Handle == 0) {
+		GP_LOG_E ("EOS capture: no object event within %d s — the photo may be "
+			  "stuck in host-transfer (SDRAM) mode; check the CaptureDestination "
+			  "log above and the camera's card", EOS_CAPTURE_TIMEOUT/1000);
+		return GP_ERROR_TIMEOUT;
+	}
 	GP_LOG_D ("object has OFC 0x%x", oi.ObjectFormat);
 
 	if (oi.StorageID)
@@ -6272,20 +6313,19 @@ camera_trigger_canon_eos_capture (Camera *camera, GPContext *context)
 
 	if (have_eos_prop(params, PTP_VENDOR_CANON, PTP_DPC_CANON_EOS_CaptureDestination)) {
 		C_PTP (ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_CaptureDestination, &dpd));
-		if (dpd.CurrentValue.u32 == PTP_CANON_EOS_CAPTUREDEST_HD) {
-			C_PTP (ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_AvailableShots, &dpd));
-			if (dpd.CurrentValue.u32 < 100) {
-				/* Tell the camera we have enough free space on the PC */
-#if 0
-				if (!params->eos_uilocked)
-					ptp_canon_eos_setuilock(params);
-#endif
-				LOG_ON_PTP_E (ptp_canon_eos_pchddcapacity(params, 0x0fffffff, 0x00001000, 0x00000001));
-#if 0
-				if (!params->eos_uilocked)
-					ptp_canon_eos_resetuilock(params);
-#endif
-			}
+		GP_LOG_E ("EOS capture: CaptureDestination=%u (1=card, 4=host-transfer)",
+			  dpd.CurrentValue.u32);
+		/* LensLink: photos must land on the card. With the
+		 * host-transfer destination over PTP/IP in PC-remote mode,
+		 * the camera captures into SDRAM and waits for a host fetch
+		 * that never comes: no ObjectAdded event, nothing written to
+		 * card, EVF frozen. Switch the camera to card saving. */
+		if (dpd.CurrentValue.u32 != 1) {
+			uint32_t	card_dest = 1;
+			uint16_t	sret = ptp_canon_eos_setdevicepropvalue (
+				params, PTP_DPC_CANON_EOS_CaptureDestination,
+				&card_dest, PTP_DTC_UINT32);
+			GP_LOG_E ("EOS capture: set CaptureDestination=1 -> 0x%04x", sret);
 		}
 	}
 
