@@ -545,6 +545,9 @@ Java_com_mav_cameranativebridge_NativeCameraInterface_nativeInitWithIp(
 	int ret;
 	const char *failWhat = "";
 
+	/* 0. route gp_log (camlib scanning / dlopen diagnostics) to logcat */
+	ensureGpLogging();
+
 	/* 1. camlib/iolib search paths */
 	setLibDirs(cppLibDir);
 	if (cppLibDir) env->ReleaseStringUTFChars(nativeLibDir, cppLibDir);
@@ -564,14 +567,14 @@ Java_com_mav_cameranativebridge_NativeCameraInterface_nativeInitWithIp(
 	{
 		CameraAbilitiesList *abilities = nullptr;
 		do {
-			if ((ret = gp_abilities_list_new(&abilities)) < GP_OK) break;
-			if ((ret = gp_abilities_list_load(abilities, g_session.context)) < GP_OK) break;
+			if ((ret = gp_abilities_list_new(&abilities)) < GP_OK) { failWhat = "gp_abilities_list_new"; break; }
+			if ((ret = gp_abilities_list_load(abilities, g_session.context)) < GP_OK) { failWhat = "gp_abilities_list_load"; break; }
 			CameraAbilities apt;
-			if ((ret = chooseAbilities(abilities, &apt)) < GP_OK) break;
-			ret = gp_camera_set_abilities(g_session.camera, apt);
+			if ((ret = chooseAbilities(abilities, &apt)) < GP_OK) { failWhat = "no usable camlib (libptp2.so dlopen failed?)"; break; }
+			if ((ret = gp_camera_set_abilities(g_session.camera, apt)) < GP_OK) { failWhat = "gp_camera_set_abilities"; break; }
 		} while (false);
 		if (abilities) gp_abilities_list_free(abilities);
-		if (ret < GP_OK) { failWhat = "gp_camera_set_abilities"; goto fail; }
+		if (ret < GP_OK) goto fail;
 	}
 
 	/* 4. port lookup: "ptpip:<host>:<port>" */

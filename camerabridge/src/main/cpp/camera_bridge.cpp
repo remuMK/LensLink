@@ -192,6 +192,9 @@ Java_com_mav_cameranativebridge_NativeCameraInterface_nativeInitWithFd(
 	int ret;
 	const char *failWhat = "";
 
+	/* 0. route gp_log (camlib scanning / dlopen diagnostics) to logcat */
+	ensureGpLogging();
+
 	/* 1. env search paths for lt_dlopenext("libusb1"), ("ptp2") */
 	setLibDirs(cppLibDir);
 	if (cppLibDir) env->ReleaseStringUTFChars(nativeLibDir, cppLibDir);

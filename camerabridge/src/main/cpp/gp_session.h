@@ -16,6 +16,8 @@
 #include <cstring>
 
 #include <gphoto2/gphoto2.h>
+#include <gphoto2/gphoto2-port-log.h>
+#include <gphoto2/gphoto2-result.h>
 
 #include <pthread.h>
 
@@ -53,6 +55,37 @@ void gpThrow(JNIEnv *env, int ret, const char *what);
 
 /* sets IOLIBS/CAMLIBS to the app's nativeLibraryDir */
 void setLibDirs(const char *nativeLibDir);
+
+/**
+ * Routes libgphoto2's internal gp_log stream (camlib dir scans, lt_dlopen
+ * failures, PTP trace lines) into logcat. Without a handler all GP_LOG_D
+ * output is dropped, which made runtime dlopen problems impossible to see
+ * on a device. Register once from any native init entry point.
+ */
+inline void ensureGpLogging()
+{
+	static bool registered = false;
+	if (registered)
+		return;
+	registered = true;
+#ifdef __ANDROID__
+	static auto log = [](GPLogLevel level, const char *domain, const char *str, void *) {
+		android_LogPriority pri = ANDROID_LOG_DEBUG;
+		switch (level) {
+		case GP_LOG_ERROR: pri = ANDROID_LOG_ERROR; break;
+		case GP_LOG_DEBUG: pri = ANDROID_LOG_INFO;  break;
+		default:           pri = ANDROID_LOG_DEBUG; break; /* DATA dumps */
+		}
+		__android_log_print(pri, "GPhoto2", "%s: %s", domain ? domain : "gp", str);
+	};
+	gp_log_add_func(GP_LOG_DEBUG, log, nullptr);
+#else
+	static auto log = [](GPLogLevel, const char *domain, const char *str, void *) {
+		fprintf(stderr, "[gp] %s: %s\n", domain ? domain : "gp", str);
+	};
+	gp_log_add_func(GP_LOG_DEBUG, log, nullptr);
+#endif
+}
 
 /**
  * Selects the PTP2 camlib. Only the ptp2 camlib is shipped, but match by
@@ -120,6 +153,7 @@ using gpbridge::jniThrowImpl;
 using gpbridge::jniThrowFmt;
 using gpbridge::gpThrow;
 using gpbridge::setLibDirs;
+using gpbridge::ensureGpLogging;
 using gpbridge::chooseAbilities;
 
 #endif /* ANDROID_CAMERA_BRIDGE_GP_SESSION_H */
