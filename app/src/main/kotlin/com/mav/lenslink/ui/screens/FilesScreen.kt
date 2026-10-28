@@ -591,7 +591,8 @@ private fun FileGrid(
         state = gridState,
         columns = GridCells.Adaptive(108.dp),
         contentPadding = PaddingValues(
-            horizontal = 8.dp,
+            start = 8.dp,
+            end = 8.dp,
             bottom = 24.dp,
         ),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
