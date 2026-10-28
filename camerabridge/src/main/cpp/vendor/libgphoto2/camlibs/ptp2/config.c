@@ -385,12 +385,13 @@ camera_prepare_canon_eos_capture(Camera *camera, GPContext *context) {
 
 		if (!strcmp(params->deviceinfo.Model,"Canon PowerShot G5 X")) mode = 0x11;
 		if (!strcmp(params->deviceinfo.Model,"Canon EOS M6 Mark II")) mode = 0x1;
-		/* LensLink: over WiFi the M50m2 behaves like its DIGIC-8
-		 * sibling M6 Mark II — remote mode 0x15 only routes the
-		 * viewfinder to USB; the network client needs the classic
-		 * PC remote mode 1. */
-		if (!strcmp(params->deviceinfo.Model,"Canon EOS M50m2") &&
-		    (camera->port->type == GP_PORT_PTPIP)) mode = 0x1;
+		/* LensLink: over WiFi the EOS-M network stack behaves like the
+		 * regular-EOS remote — mode 1. 0x15 only routes the viewfinder to
+		 * USB. Keyed on the TRANSPORT, not on the model string: the M50
+		 * Mark II reports itself as plain "Canon EOS M50" over IP (the
+		 * "m2" suffix only appears on USB), so per-model matches silently
+		 * missed and every IP session armed 0x15 + the extras combo. */
+		if (camera->port->type == GP_PORT_PTPIP) mode = 0x1;
 		C_PTP (ptp_canon_eos_setremotemode(params, mode));
 		GP_LOG_E ("EOS capture prepare: model='%s' transport=%s remote mode 0x%x",
 			  params->deviceinfo.Model ? params->deviceinfo.Model : "?",
@@ -485,7 +486,12 @@ skip:
 		 * IP instead.
 		 */
 		int on_ip = (camera->port->type == GP_PORT_PTPIP);
-		int need_extra = is_canon_eos_m (params) &&
+		/* LensLink: over PTP/IP never run the extras — eventmode 2 +
+		 * output 8 is the disproven MOBILE2 combo, and the "M50m2"
+		 * exclusion never matched over IP anyway because the camera
+		 * reports itself as plain "Canon EOS M50" there. USB keeps
+		 * upstream's per-model behavior. */
+		int need_extra = is_canon_eos_m (params) && !on_ip &&
 			(strcmp(params->deviceinfo.Model,"Canon EOS M6 Mark II") != 0) &&
 			(strcmp(params->deviceinfo.Model,"Canon EOS M50m2") != 0);
 

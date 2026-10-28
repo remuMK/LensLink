@@ -228,7 +228,10 @@ fun FilesScreen() {
     LaunchedEffect(state.files, connection) {
         if (state.files.isEmpty()) return@LaunchedEffect
         var failures = 0
-        for (file in state.files.take(400)) {
+        // No cap: entries are read-through (metaMap / per-listing seeds /
+        // negative cache), so the loop costs camera traffic only for files
+        // the camera still owes us info for.
+        for (file in state.files) {
             if (file.fullPath in state.withMetadata) continue
             try {
                 state.withMetadata[file.fullPath] = repo.fileInfoFor(file)
@@ -247,7 +250,7 @@ fun FilesScreen() {
         var dated = 0
         var undated = 0
         var unknown = 0
-        for (file in state.files.take(400)) {
+        for (file in state.files) {
             when (val info = state.withMetadata[file.fullPath]) {
                 null -> {}
                 CameraFileInfo.UNKNOWN -> unknown++
@@ -257,12 +260,12 @@ fun FilesScreen() {
         Log.i(
             TAG,
             "metadata pass: $dated dated, $undated undated, $unknown unknown " +
-                "of ${state.files.size.coerceAtMost(400)} files",
+                "of ${state.files.size} files",
         )
         if (failures > 0) {
             Log.w(
                 TAG,
-                "file metadata: $failures of ${state.files.size.coerceAtMost(400)} " +
+                "file metadata: $failures of ${state.files.size} " +
                     "files failed — those sort by name sequence",
             )
         }

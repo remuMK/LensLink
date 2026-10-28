@@ -6260,6 +6260,16 @@ camera_trigger_canon_eos_capture (Camera *camera, GPContext *context)
 	if (params->eos_camerastatus == 1)
 		return GP_ERROR_CAMERA_BUSY;
 
+	/* LensLink: log the camera's drive mode at trigger time — multiple
+	 * shutter fires per press are either a continuous (burst) drive mode
+	 * or a release the camera never saw end. */
+	if (have_eos_prop(params, PTP_VENDOR_CANON, PTP_DPC_CANON_EOS_DriveMode) &&
+	    PTP_RC_OK == ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_DriveMode, &dpd)) {
+		GP_LOG_E ("EOS capture: DriveMode dtype=%04x value=0x%08x (1=single 2/3=continuous 4/5=selftimer)",
+			  dpd.DataType, dpd.CurrentValue.u32);
+		ptp_free_devicepropdesc (&dpd);
+	}
+
 	if (have_eos_prop(params, PTP_VENDOR_CANON, PTP_DPC_CANON_EOS_CaptureDestination)) {
 		C_PTP (ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_CaptureDestination, &dpd));
 		if (dpd.CurrentValue.u32 == PTP_CANON_EOS_CAPTUREDEST_HD) {
@@ -6365,7 +6375,12 @@ camera_trigger_canon_eos_capture (Camera *camera, GPContext *context)
 			/* Canon EOS M series */
 			int button = 0, eos_m_focus_done = 0;
 
-			C_PTP_REP_MSG (ptp_canon_eos_remotereleaseon (params, 3, 0), _("Canon EOS M Full-Press failed"));
+			ret = ptp_canon_eos_remotereleaseon (params, 3, 0);
+			/* LensLink: E-level logs around the release pair — a
+			 * "shutter fires multiple times per press" report must
+			 * be traceable (one capture = exactly ONE on/off pair). */
+			GP_LOG_E ("EOS M: RemoteReleaseOn(3,0) -> 0x%04x", ret);
+			C_PTP_REP_MSG (ret, _("Canon EOS M Full-Press failed"));
 
 			struct timeval focus_start = time_now(); /* This might be a misnomer, see EOS case above. */
 			/* check if the capture was successful (the result is reported as a set of OLCInfoChanged events) */
@@ -6401,7 +6416,11 @@ camera_trigger_canon_eos_capture (Camera *camera, GPContext *context)
 				}
 			} while (!eos_m_focus_done && waiting_for_timeout (&back_off_wait, focus_start, 2*1000)); /* wait 2 seconds for focus */
 			/* full release now (even if the press has failed) */
-			C_PTP_REP_MSG (ptp_canon_eos_remotereleaseoff (params, 3), _("Canon EOS M Full-Release failed"));
+			ret = ptp_canon_eos_remotereleaseoff (params, 3);
+			GP_LOG_E ("EOS M: RemoteReleaseOff(3) -> 0x%04x (button=%d focus_done=%d %ld ms)",
+				  ret, button, eos_m_focus_done,
+				  (long)time_since (focus_start));
+			C_PTP_REP_MSG (ret, _("Canon EOS M Full-Release failed"));
 			ptp_check_eos_events (params);
 			/* NB: no error is returned in case of button == 7, which means
 			 * the timer is still working, but no AF fail has been reported */
