@@ -311,7 +311,7 @@ private fun Viewport(
         drawScaled(image, rect, FilterQuality.Low)
 
         if (panel.showZebra && zebraImage != null) {
-            drawScaled(zebraImage, rect, FilterQuality.Nearest, alpha = 0.85f)
+            drawScaled(zebraImage, rect, FilterQuality.None, alpha = 0.85f)
         }
 
         when (gridStyle) {
