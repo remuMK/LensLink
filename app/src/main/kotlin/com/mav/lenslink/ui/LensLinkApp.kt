@@ -8,9 +8,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material.icons.rounded.Link
+import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -32,8 +32,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
-import com.mav.lenslink.LensLinkApplication
+import com.mav.lenslink.appContainer
 import com.mav.lenslink.models.ConnState
 import com.mav.lenslink.ui.screens.ConnectScreen
 import com.mav.lenslink.ui.screens.FilesScreen
@@ -50,14 +49,9 @@ enum class Tab(val label: String) {
     fun icon(): ImageVector = when (this) {
         CONNECT -> Icons.Rounded.Link
         VIEWFINDER -> Icons.Rounded.CameraAlt
-        FILES -> Icons.AutoMirrored.Rounded.PhotoLibrary
+        FILES -> Icons.Rounded.PhotoLibrary
     }
 }
-
-/** Typed access to the app container. */
-@Composable
-fun appContainer(): LensLinkApplication =
-    LocalContext.current.applicationContext as LensLinkApplication
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

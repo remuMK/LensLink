@@ -19,6 +19,7 @@ import android.util.Log
 import com.mav.cameranativebridge.NativeCameraInterface
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 class UsbMonitor(private val context: Context) {
 

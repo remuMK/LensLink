@@ -66,9 +66,9 @@ class WifiScanner(private val context: Context) {
     /** True when a scan result callback is expected (API-dependent race). */
     fun canScan(): Boolean =
         wifi.isWifiEnabled &&
-            hasPermission(Manifest.permission.ACCESS_FINE_LOCATION) ||
-            (Build.VERSION.SDK_INT >= 33 &&
-                hasPermission(Manifest.permission.NEARBY_WIFI_DEVICES))
+            (hasPermission(Manifest.permission.ACCESS_FINE_LOCATION) ||
+                (Build.VERSION.SDK_INT >= 33 &&
+                    hasPermission(Manifest.permission.NEARBY_WIFI_DEVICES)))
 
     private fun hasPermission(permission: String): Boolean =
         ContextCompat.checkSelfPermission(
@@ -123,7 +123,7 @@ class WifiScanner(private val context: Context) {
         if (ip == 0) return null
         // Android stores int IPs little-endian; reconstruct octets
         val it = ipToBytes(ip)
-        val nb = if (netmask != 0) ipToBytes(netmask) else byteArrayOf(255, 255, 255, 0)
+        val nb = if (netmask != 0) ipToBytes(netmask) else byteArrayOf(255.toByte(), 255.toByte(), 255.toByte(), 0)
         val a = it[0].toInt() and nb[0].toInt()
         val b = it[1].toInt() and nb[1].toInt()
         val c = it[2].toInt() and nb[2].toInt()
@@ -170,9 +170,9 @@ class WifiScanner(private val context: Context) {
                     socket.connect(InetSocketAddress(host, port), timeoutMs)
                     runCatching { socket.close() }
                     cont.resume(true)
-                } catch {
-                    cont.resume(false)
-                }
+        } catch (e: Exception) {
+            cont.resume(false)
+        }
             }
         } ?: false
     }

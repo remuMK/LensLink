@@ -202,7 +202,7 @@ class CameraRepository(context: Context) {
         val info = readInfo(kind)
         Log.i(TAG, "connected: ${info.model} battery=${info.batteryText}")
         _connection.value = ConnState.Connected(kind, info)
-        refreshProperties()
+        refreshControls()
         startTelemetry()
     }
 
@@ -527,7 +527,7 @@ private data class DecodedFrame(
     val zebra: Bitmap?,
 )
 
-internal fun decodeFrame(bytes: ByteArray): DecodedFrame {
+private fun decodeFrame(bytes: ByteArray): DecodedFrame {
     if (bytes.isEmpty()) return DecodedFrame(null, null, null)
     val bitmap = runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
         .getOrNull() ?: return DecodedFrame(null, null, null)
@@ -537,7 +537,7 @@ internal fun decodeFrame(bytes: ByteArray): DecodedFrame {
 }
 
 /** 256-bin histogram computed over a small scaled proxy (stride-5 sample). */
-internal fun computeHistogram(src: Bitmap): IntArray {
+private fun computeHistogram(src: Bitmap): IntArray {
     val w = src.width.coerceAtLeast(1)
     val h = src.height.coerceAtLeast(1)
     val target = 160
@@ -560,7 +560,7 @@ internal fun computeHistogram(src: Bitmap): IntArray {
 }
 
 /** 1/4-scale mask of near-white pixels (zebra / clipping warning). */
-internal fun computeZebra(src: Bitmap): Bitmap {
+private fun computeZebra(src: Bitmap): Bitmap {
     val w = maxOf(1, src.width / 4)
     val h = maxOf(1, src.height / 4)
     val mask = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
@@ -572,7 +572,7 @@ internal fun computeZebra(src: Bitmap): Bitmap {
         val r = (p ushr 16) and 0xFF
         val g = (p ushr 8) and 0xFF
         val b = p and 0xFF
-        pixels[i] = if (r > 250 && g > 250 && b > 250) 0xCCEB5757 else 0x00000000
+        pixels[i] = if (r > 250 && g > 250 && b > 250) 0xCCEB5757.toInt() else 0x00000000
         // 0xCCEB5757 = ~80% alpha of M3 error red
     }
     mask.setPixels(pixels, 0, w, 0, 0, w, h)
@@ -590,7 +590,7 @@ private fun parseModel(summary: String): String? {
 private val BATTERY_NUM = Pattern.compile("(\\d{1,3})\\s*%")
 
 /** Maps "100%"/"75%"/… and "Low" onto 0–100. */
-internal fun parseBattery(batteryText: String): Int? {
+private fun parseBattery(batteryText: String): Int? {
     val m = BATTERY_NUM.matcher(batteryText)
     if (m.find()) return m.group(1)?.toIntOrNull()?.coerceIn(0, 100)
     return when (batteryText.trim().lowercase(Locale.ROOT)) {
