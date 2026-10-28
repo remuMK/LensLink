@@ -95,8 +95,11 @@ class CameraRepository(context: Context) {
         /** Liveness probe cadence — detect a vanished camera quickly. */
         private const val PROBE_INTERVAL_MS = 6_000L
 
-        /** Consecutive failed probes before "not connected" is declared. */
-        private const val LIVENESS_FAIL_THRESHOLD = 2
+        /** Consecutive failed probes before "not connected" is declared.
+         * Patient enough to ride out the post-capture CR3 download over
+         * WiFi (a 2-miss teardown used to "randomly disconnect" the app
+         * while the camera was legitimately busy transferring). */
+        private const val LIVENESS_FAIL_THRESHOLD = 3
 
         /** gp_camera_init is retried before surfacing "gp I/O 7 (-10)". */
         private const val CONNECT_ATTEMPTS = 3
@@ -418,6 +421,10 @@ class CameraRepository(context: Context) {
             while (isActive && iface != null) {
                 delay(PROBE_INTERVAL_MS)
                 if (iface == null) break
+                // a long op (capture release, CR3 auto-download, bulk save)
+                // legitimately makes the camera answer busy — don't count
+                // that as a dead session
+                if (sessionBusy.get() > 0) continue
                 // cheap single-property read; both fast on PTP and honest
                 // about whether the device still answers
                 val battery = runCatching {
@@ -467,6 +474,11 @@ class CameraRepository(context: Context) {
      *  instead of fighting for the lock (and kicking the camera) mid-release. */
     private val previewPaused = AtomicInteger(0)
 
+    /** > 0 while a long session op (release, file download) is in flight:
+     *  the liveness probe skips its ticks so a legitimately busy camera
+     *  is not counted as "stopped answering". */
+    private val sessionBusy = AtomicInteger(0)
+
     /**
      * Starts the decode loop: one `gp_camera_capture_preview` per tick
      * (the ptp2 camlib boots the EOS live view itself on the first call).
@@ -503,6 +515,14 @@ class CameraRepository(context: Context) {
                     if (bytes == null) {
                         fails++
                         _previewFails.value = fails
+                        if (fails >= 3) {
+                            // the camera is not streaming (never armed, or
+                            // stream died) — stop burning the native lock
+                            // with ~3 s holds per failed tick; the Retry
+                            // card offers a fresh session
+                            Log.w(TAG, "live view: $fails consecutive failures — stopping loop")
+                            break
+                        }
                         // 90 → 360 ms backoff between attempts; the native
                         // call itself is the slow part when arming fails
                         delay(PREVIEW_INTERVAL_MS * (1L shl fails.coerceAtMost(2)))
@@ -645,6 +665,7 @@ class CameraRepository(context: Context) {
          * until the capture returns.
          */
         previewPaused.incrementAndGet()
+        sessionBusy.incrementAndGet()
         try {
             _captureState.value = CaptureState(busy = true)
             val result = onCamera { i -> i.captureImage() } ?: error("capture returned nothing")
@@ -677,6 +698,7 @@ class CameraRepository(context: Context) {
             return file
         } finally {
             previewPaused.decrementAndGet()
+            sessionBusy.decrementAndGet()
         }
     }
 
@@ -785,11 +807,21 @@ class CameraRepository(context: Context) {
         warmupJob?.cancel()
         if (files.isEmpty()) return
         warmupJob = scope.launch {
+            var misses = 0
             for (file in files) {
                 if (!isActive) break
                 if (thumbCache.get(file.fullPath) != null) continue
                 if (file.fullPath in thumbNoInfo) continue
-                runCatching { thumbnailFor(file) }
+                val got = runCatching { thumbnailFor(file) }.getOrNull()
+                // circuit breaker: 5 consecutive misses means the session
+                // died mid-warm-up (or the camera refuses thumbs entirely) —
+                // stop instead of grinding through the whole list and
+                // negative-caching every remaining file
+                misses = if (got == null) misses + 1 else 0
+                if (misses >= 5) {
+                    Log.w(TAG, "thumbnail warm-up: $misses consecutive misses — stopping (session likely gone)")
+                    break
+                }
                 yield()
             }
             Log.i(TAG, "thumbnail warm-up done (${files.size} files)")
@@ -1057,30 +1089,37 @@ class CameraRepository(context: Context) {
         items: List<Pair<String, String>>,
         notifyEach: Boolean = false,
     ): DownloadResult {
-        _downloadProgress.value = 0f
-        var saved = 0
-        var failed = 0
-        for ((index, item) in items.withIndex()) {
-            val staging = stagingFile(item.second)
-            try {
-                onCamera { i ->
-                    i.downloadFileTo(item.first, item.second, staging)
+        // multi-second (CR3-sized) transfers: keep the liveness probe from
+        // counting the busy camera as dead
+        sessionBusy.incrementAndGet()
+        try {
+            _downloadProgress.value = 0f
+            var saved = 0
+            var failed = 0
+            for ((index, item) in items.withIndex()) {
+                val staging = stagingFile(item.second)
+                try {
+                    onCamera { i ->
+                        i.downloadFileTo(item.first, item.second, staging)
+                    }
+                    saveStaging(staging, item.second)?.let { finalName ->
+                        saved++
+                        if (notifyEach) notifyDownloadSaved(finalName)
+                    } ?: run { failed++ }
+                } catch (t: Throwable) {
+                    Log.w(TAG, "bulk download failed for ${item.first}${item.second}", t)
+                    failed++
+                } finally {
+                    staging.delete()
                 }
-                saveStaging(staging, item.second)?.let { finalName ->
-                    saved++
-                    if (notifyEach) notifyDownloadSaved(finalName)
-                } ?: run { failed++ }
-            } catch (t: Throwable) {
-                Log.w(TAG, "bulk download failed for ${item.first}${item.second}", t)
-                failed++
-            } finally {
-                staging.delete()
+                _downloadProgress.value = (index + 1).toFloat() / items.size
             }
-            _downloadProgress.value = (index + 1).toFloat() / items.size
+            _downloadProgress.value = 1f
+            if (saved > 0 && !notifyEach) notifyDownloadSavedBatch(saved)
+            return DownloadResult(saved, failed, "Download/LensLink")
+        } finally {
+            sessionBusy.decrementAndGet()
         }
-        _downloadProgress.value = 1f
-        if (saved > 0 && !notifyEach) notifyDownloadSavedBatch(saved)
-        return DownloadResult(saved, failed, "Download/LensLink")
     }
 
     private fun stagingDir(): File = File(appContext.cacheDir, "staging").apply { mkdirs() }
