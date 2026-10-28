@@ -314,8 +314,12 @@ camera_canon_eos_update_capture_target(Camera *camera, GPContext *context, int v
 			if (dpd.CurrentValue.u32 != PTP_CANON_EOS_CAPTUREDEST_HD) {
 				cardval = dpd.CurrentValue.u32;
 			} else {
-				GP_LOG_D ("NO Card found - falling back to SDRAM!");
-				cardval = PTP_CANON_EOS_CAPTUREDEST_HD;
+				/* LensLink: the property cache can report HD over
+				 * IP; the card value on Canon EOS bodies is 1.
+				 * Falling back to SDRAM here is what sent every
+				 * capture into host-transfer mode. */
+				GP_LOG_E ("update_capture_target: no enum, cache says HD — forcing cardval=1");
+				cardval = 1;
 			}
 		}
 	}
@@ -323,10 +327,22 @@ camera_canon_eos_update_capture_target(Camera *camera, GPContext *context, int v
 	if (value == 1)
 		value = cardval;
 
-	/* -1 == use setting from config-file, 1 == card, 4 == ram*/
-	ct_val.u32 = (value == -1)
-		     ? (GP_OK == gp_setting_get("ptp2","capturetarget",buf)) && strcmp(buf,"sdram") ? cardval : PTP_CANON_EOS_CAPTUREDEST_HD
-		     : value;
+	/* -1 == use setting from config-file, 1 == card, 4 == ram.
+	 * LensLink: Android has no persistent gphoto2 settings store, so the
+	 * ABSENT "capturetarget" setting fell through to HD (SDRAM /
+	 * host-transfer) on every prepare and trigger — the camera captured
+	 * into RAM, waited for a host fetch that never came (no ObjectAdded
+	 * over IP), wrote nothing to the card, wedged the EVF, and hung at
+	 * power-off on "saving remaining images". Absent setting now means
+	 * CARD; only an explicit "sdram" selects host-transfer. */
+	{
+		int	sdram = 0;
+		if (GP_OK == gp_setting_get("ptp2","capturetarget",buf))
+			sdram = !strcmp(buf,"sdram");
+		ct_val.u32 = (value == -1)
+			     ? (sdram ? PTP_CANON_EOS_CAPTUREDEST_HD : cardval)
+			     : value;
+	}
 
 	/* otherwise we get DeviceBusy for some reason */
 	if (ct_val.u32 != dpd.CurrentValue.u32) {
@@ -396,6 +412,18 @@ camera_prepare_canon_eos_capture(Camera *camera, GPContext *context) {
 		GP_LOG_E ("EOS capture prepare: model='%s' transport=%s remote mode 0x%x",
 			  params->deviceinfo.Model ? params->deviceinfo.Model : "?",
 			  (camera->port->type == GP_PORT_PTPIP) ? "PTP/IP" : "USB", mode);
+		if (camera->port->type == GP_PORT_PTPIP) {
+			/* LensLink: normalize the camera's output route to the
+			 * WiFi default (8). The PREVIOUS session's unprepare
+			 * leaves EVFOutputDevice at 0 ("no output") camera-side,
+			 * and the legacy ViewfinderOn stream then has no route;
+			 * first-ever sessions stream because the camera boots
+			 * with the default, later sessions on the same power
+			 * cycle never re-arm it. */
+			PTPPropValue evfout;
+			evfout.u32 = 8;
+			LOG_ON_PTP_E (ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &evfout, PTP_DTC_UINT32));
+		}
 	} else {
 		C_PTP (ptp_canon_eos_setremotemode(params, 1));
 	}

@@ -6325,14 +6325,13 @@ camera_trigger_canon_eos_capture (Camera *camera, GPContext *context)
 
 	if (have_eos_prop(params, PTP_VENDOR_CANON, PTP_DPC_CANON_EOS_CaptureDestination)) {
 		C_PTP (ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_CaptureDestination, &dpd));
-		GP_LOG_E ("EOS capture: CaptureDestination=%u (1=card, 4=host-transfer)",
+		GP_LOG_E ("EOS capture: CaptureDestination cache=%u (1=card, 4=host-transfer) — setting card",
 			  dpd.CurrentValue.u32);
-		/* LensLink: photos must land on the card. With the
-		 * host-transfer destination over PTP/IP in PC-remote mode,
-		 * the camera captures into SDRAM and waits for a host fetch
-		 * that never comes: no ObjectAdded event, nothing written to
-		 * card, EVF frozen. Switch the camera to card saving. */
-		if (dpd.CurrentValue.u32 != 1) {
+		/* LensLink: photos must land on the card. Set UNCONDITIONALLY —
+		 * the property cache over IP can be stale (it reported card
+		 * while the camera still captured to SDRAM, and a cache-only
+		 * read never talks to the camera). */
+		{
 			uint32_t	card_dest = 1;
 			uint16_t	sret = ptp_canon_eos_setdevicepropvalue (
 				params, PTP_DPC_CANON_EOS_CaptureDestination,
