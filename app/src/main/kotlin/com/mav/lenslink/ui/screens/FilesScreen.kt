@@ -440,7 +440,8 @@ private fun FileCell(
     state: FilesUiState,
 ) {
     var thumb by remember(file.fullPath) { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(file.fullPath) { thumb = appContainer().repository.thumbnailFor(file) }
+    val repo = appContainer().repository
+    LaunchedEffect(file.fullPath) { thumb = repo.thumbnailFor(file) }
 
     val isSelected = state.selected.containsKey(file.fullPath)
     val selecting = state.selecting || state.selected.isNotEmpty()
@@ -530,7 +531,8 @@ private fun FileRow(
 ) {
     // thumbnail (PTP GetObjectThumb through the disk+memory caches)
     var thumb by remember(file.fullPath) { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(file.fullPath) { thumb = appContainer().repository.thumbnailFor(file) }
+    val repo = appContainer().repository
+    LaunchedEffect(file.fullPath) { thumb = repo.thumbnailFor(file) }
 
     val isSelected = state.selected.containsKey(file.fullPath)
     val selecting = state.selecting || state.selected.isNotEmpty()
