@@ -3633,7 +3633,9 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 			 * until the camera starts streaming.
 			 */
 			uint32_t		evfout[4];
+			uint32_t		evfarg[2];
 			int			evfn = 1;
+			int			evfargn = 1;
 			int			kick = 0, maxkicks = 1;
 			uint32_t		evf_set = 0;	/* last EVFOutputDevice we set this call */
 			SET_CONTEXT_P(params, context);
@@ -3656,33 +3658,38 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 				evfout[3] = 8;
 				evfn = 4;
 				maxkicks = 2;   /* kicks per call; index rotates across calls */
+				/* The GetViewFinderData first argument has been seen
+				 * as 0x00200000 (EOS 1000D trace) and 0x00100000;
+				 * rotate across kicks — kicks 1-4 run with the
+				 * classic value, 5-8 with the alternate. */
+				evfarg[0] = 0x00200000;
+				evfarg[1] = 0x00100000;
+				evfargn = 2;
 			} else {
 				evfout[0] = 2;  /* PC, as before */
+				evfarg[0] = 0x00200000;
 				evfn = 1;
+				evfargn = 1;
 				maxkicks = 1;
 			}
 
 			/* do not set it everytime, it will cause delays */
 			ret = ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_EVFMode, &dpd);
-			if ((ret != PTP_RC_OK) && (camera->port->type == GP_PORT_PTPIP) &&
-			    !params->evf_prop_requested &&
-			    ptp_operation_issupported (params, PTP_OC_CANON_EOS_RequestDevicePropValue)) {
-				/* Over PTP/IP the EOS event cache usually never receives
-				 * the live-view props on its own, so getdevicepropdesc
-				 * fails for them forever. Force the camera to emit them
-				 * once (exactly what the prepare block does for
-				 * Owner/Artist), so the reads below and the guided
-				 * EVFOutputDevice handling work with real values. */
-				params->evf_prop_requested = 1;
-				GP_LOG_E ("EVF props not in event cache — requesting EVFMode/EVFOutputDevice");
-				LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFMode));
-				LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice));
-				C_PTP (ptp_check_eos_events (params));
-				ret = ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_EVFMode, &dpd);
-				if (ret == PTP_RC_OK)
-					GP_LOG_E ("EVFMode now readable: cur=%d", dpd.CurrentValue.u16);
-			}
 			if (ret != PTP_RC_OK) {
+				/* obtainable ONLY from the EOS event cache; the
+				 * connect flood normally delivers the desc
+				 * record over PTP/IP. If it is missing anyway,
+				 * blind-set EVFMode=1 (RequestDevicePropValue
+				 * times out over IP on the M50m2 — do not go
+				 * there). */
+				GP_LOG_E ("reading EOS EVFMode device prop failed: %04x", ret);
+				if ((camera->port->type == GP_PORT_PTPIP) && !params->evf_armed) {
+					uint16_t	bret;
+					val.u16 = 1;
+					bret = ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFMode, &val, PTP_DTC_UINT16);
+					GP_LOG_E ("liveview arm: blind EVFMode=1 -> %04x", bret);
+				}
+			} else if ((dpd.CurrentValue.u16 != 1)) {
 				/* obtainable ONLY from the EOS event cache; over WiFi it is
 				 * sometimes never delivered -> make that visible instead of
 				 * silently skipping the live view enable below. */
@@ -3741,11 +3748,15 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 			event_start = time_now();
 			do {
 				unsigned char	*xdata;
+				/* rotating GetViewFinderData argument (see the
+				 * candidates above): kicks 1-4 use the classic
+				 * 0x00200000, kicks 5-8 the 0x00100000 variant. */
+				uint32_t	arg1 = evfarg[(params->evf_kick_index / evfn) % evfargn];
 				/* Poll for camera events, but just call
 				 * it once and do not drain the queue now */
 				C_PTP (ptp_check_eos_events (params));
 
-				ret = ptp_canon_eos_get_viewfinder_image (params , &data, &size);
+				ret = ptp_canon_eos_get_viewfinder_image_arg (params, arg1, &data, &size);
 				if ((ret == 0xa102) || (ret == PTP_RC_DeviceBusy)) { /* means "not there yet" ... so wait */
 					/* wait 3 seconds at most ... use a bit of backoff logic for cameras where we should not drain compute. */
 					usleep((++try)*5*1000);
@@ -3770,22 +3781,15 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 					if ((kick < maxkicks) && (params->evf_kicks_since_frame < 12)) {
 						uint16_t	bret;
 						unsigned	kidx = params->evf_kick_index % evfn;
-						/* one-shot over IP: when the stream refuses to
-						 * come up anyway, re-arm the PC remote mode
-						 * with the classic value 1 — the EOS-M
-						 * prepare uses 0x15, which apparently only
-						 * routes the viewfinder over USB; DSLR
-						 * WiFi sessions run with mode 1. */
-						if ((camera->port->type == GP_PORT_PTPIP) &&
-						    !params->evf_remotemode_retried &&
-						    (params->evf_kicks_since_frame >= 4)) {
-							params->evf_remotemode_retried = 1;
-							GP_LOG_E ("live view: re-arming remote mode 1 over IP (prepare used 0x15)");
-							LOG_ON_PTP_E (ptp_canon_eos_setremotemode (params, 1));
-							LOG_ON_PTP_E (ptp_canon_eos_seteventmode (params, 1));
-						}
+						uint32_t	nextarg;
 						val.u32 = evfout[kidx];
-						params->evf_kick_index = (params->evf_kick_index + 1) % evfn;
+						/* free-running index: rotation continues
+						 * across capture_preview calls (no
+						 * per-call wrap-around), so kick N and
+						 * kick N+1 always try the next
+						 * output-device/argument combination. */
+						params->evf_kick_index++;
+						nextarg = evfarg[(params->evf_kick_index / evfn) % evfargn];
 						params->evf_kicks_since_frame++;
 						kick++;
 						/* alternate the set order across kicks:
@@ -3794,7 +3798,7 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 						 * accepted one on this model. */
 						if (params->evf_kicks_since_frame & 1) {
 							bret = ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &val, PTP_DTC_UINT32);
-							GP_LOG_E ("live view kick %u: EVFOutputDevice=%u set -> %04x", params->evf_kicks_since_frame, val.u32, bret);
+							GP_LOG_E ("live view kick %u: EVFOutputDevice=%u set -> %04x, next arg1=0x%08x", params->evf_kicks_since_frame, val.u32, bret, nextarg);
 							val.u16 = 1;
 							bret = ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFMode, &val, PTP_DTC_UINT16);
 							GP_LOG_E ("live view kick %u: EVFMode=1 set -> %04x", params->evf_kicks_since_frame, bret);
@@ -3804,7 +3808,7 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 							GP_LOG_E ("live view kick %u: EVFMode=1 set -> %04x", params->evf_kicks_since_frame, bret);
 							val.u32 = evfout[kidx];
 							bret = ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &val, PTP_DTC_UINT32);
-							GP_LOG_E ("live view kick %u: EVFOutputDevice=%u set -> %04x", params->evf_kicks_since_frame, val.u32, bret);
+							GP_LOG_E ("live view kick %u: EVFOutputDevice=%u set -> %04x, next arg1=0x%08x", params->evf_kicks_since_frame, val.u32, bret, nextarg);
 						}
 						evf_set = evfout[kidx];
 						try = 0;
@@ -3812,9 +3816,12 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 						event_start = time_now();
 						continue;
 					}
-					if (params->evf_kicks_since_frame < 12)
-						params->evf_kicks_since_frame = 12;	/* stop kicking, fail fast */
-					if (!params->evf_gaveup_logged) {
+					/* give up only at the REAL failure cap —
+					 * exhausting the per-call kick budget must
+					 * not fake a give-up (previously the counter
+					 * was force-set to 12 here, which also
+					 * killed the rotation across calls). */
+					if ((params->evf_kicks_since_frame >= 12) && !params->evf_gaveup_logged) {
 						PTPDevicePropDesc	rdp;
 						int			m_ok, o_ok;
 						unsigned		m_val = 0, o_val = 0;

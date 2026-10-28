@@ -725,7 +725,12 @@ class CameraRepository(context: Context) {
                 folder = raw.substring(0, slash + 1),
                 name = raw.substring(slash + 1),
             )
-        }.also { if (it.isNotEmpty()) _cachedFiles.value = it }
+        }.also { list ->
+            if (list.isNotEmpty()) _cachedFiles.value = list
+            // always-on summary: shows at a glance whether the listing came
+            // back sane or with (now skipped natively) empty names
+            Log.i(TAG, "listing: ${list.size} files")
+        }
     }
 
     /* ------------------------------------------------------------------ */
@@ -740,6 +745,8 @@ class CameraRepository(context: Context) {
      */
     private val thumbDir = File(appContext.filesDir, "thumbcache").apply { mkdirs() }
     private val thumbDirQ = Mutex()
+    /** first-N failure logging for thumbnails (keeps the log readable). */
+    private var thumbFailLogged = 0
 
     /** Up to 256 decoded thumbs (~10 MB) resident while browsing. */
     private val thumbCache =
@@ -782,7 +789,13 @@ class CameraRepository(context: Context) {
         }
         // 2) camera (+ persist)
         val bytes = onCameraOr { i -> i.thumbnailTo(file.folder, file.name) }
-            ?: return null
+        if (bytes == null) {
+            thumbFailLogged++
+            if (thumbFailLogged <= 3) {
+                Log.w(TAG, "thumbnail: camera returned none for ${file.fullPath}")
+            }
+            return null
+        }
         withContext(Dispatchers.IO) {
             thumbDirQ.withLock {
                 runCatching {

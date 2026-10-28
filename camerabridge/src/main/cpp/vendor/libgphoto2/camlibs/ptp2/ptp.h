@@ -4000,25 +4000,19 @@ struct _PTPParams {
 	int			evf_armed;
 
 	/* LensLink: live-view arming diagnostics and fast-fail state.
-	 * evf_prop_requested: EVFMode/EVFOutputDevice were pushed into the event
-	 *   cache via EOS_RequestDevicePropValue once (over PTP/IP the cache
-	 *   would otherwise stay empty and every getdevicepropdesc fails).
-	 * evf_kick_index: rotating EVFOutputDevice candidate index, persistent
-	 *   across capture_preview calls so consecutive calls try different
-	 *   candidates instead of repeating the same sequence.
+	 * evf_kick_index: free-running candidate index, persistent across
+	 *   capture_preview calls so consecutive calls try different
+	 *   EVFOutputDevice/GetViewFinderData-argument combinations
+	 *   instead of repeating the same sequence.
 	 * evf_kicks_since_frame: failed kicks since the last streamed frame;
 	 *   beyond a cap the kicks stop and preview fails fast.
 	 * evf_out_working: EVFOutputDevice value that produced a stream
 	 *   (0 = unknown); pre-set on the next call for instant re-arm.
 	 * evf_gaveup_logged: one-shot "no stream after N kicks" summary flag. */
-	int			evf_prop_requested;
 	unsigned		evf_kick_index;
 	unsigned		evf_kicks_since_frame;
 	unsigned		evf_out_working;
 	int			evf_gaveup_logged;
-	/* one-shot fallback: re-arm the PC remote mode (1) after the EOS-M
-	 * prepare value (0x15) failed to bring the stream up over PTP/IP */
-	int			evf_remotemode_retried;
 
 	/* PTP: caching time for properties, default 2 */
 	int			cachetime;
@@ -4585,6 +4579,7 @@ void ptp_canon_eos_free_deviceinfo (PTPCanonEOSDeviceInfo *di);
  **/
 #define ptp_canon_eos_end_viewfinder(params) ptp_generic_no_data(params,PTP_OC_CANON_EOS_TerminateViewfinder,0)
 uint16_t ptp_canon_eos_get_viewfinder_image (PTPParams* params, unsigned char **data, unsigned int *size);
+uint16_t ptp_canon_eos_get_viewfinder_image_arg (PTPParams* params, uint32_t arg1, unsigned char **data, unsigned int *size);
 uint16_t ptp_canon_eos_get_viewfinder_image_handler (PTPParams* params, PTPDataHandler*);
 /**
  * ptp_canon_setobjectarchive:

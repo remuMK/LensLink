@@ -327,7 +327,7 @@ Java_com_mav_cameranativebridge_NativeCameraInterface_nativeGetPreviewFrame(
 
 void collectTree(JNIEnv *env, Camera *camera, GPContext *ctx,
 				 const char *folder, int depth, jobjectArray outline,
-				 jint *idx, jint maxEntries)
+				 jint *idx, jint maxEntries, jint *skipped)
 {
 	if (depth > LIST_MAX_DEPTH || *idx >= maxEntries)
 		return;
@@ -340,6 +340,16 @@ void collectTree(JNIEnv *env, Camera *camera, GPContext *ctx,
 				const char *name = nullptr;
 				if (gp_list_get_name(files, i, &name) != GP_OK || !name)
 					continue;
+				/* LensLink: the M50m2 over PTP/IP returns objects
+				 * with EMPTY filenames for most of the cache —
+				 * appending them produces rows with no name, no
+				 * date and no thumbnail (CameraFile(folder, "")).
+				 * Skip them and count for the summary log. */
+				if (!*name) {
+					if (skipped)
+						(*skipped)++;
+					continue;
+				}
 				char full[1024];
 				snprintf(full, sizeof(full), "%s%s", folder, name);
 				jstring jstr = env->NewStringUTF(full);
@@ -358,14 +368,15 @@ void collectTree(JNIEnv *env, Camera *camera, GPContext *ctx,
 			int n = gp_list_count(dirs);
 			for (int i = 0; i < n && *idx < maxEntries; ++i) {
 				const char *name = nullptr;
-				if (gp_list_get_name(dirs, i, &name) != GP_OK || !name)
+				if (gp_list_get_name(dirs, i, &name) != GP_OK || !name || !*name)
 					continue;
 				char sub[1024];
 				if (strcmp(folder, "/") == 0)
 					snprintf(sub, sizeof(sub), "/%s/", name);
 				else
 					snprintf(sub, sizeof(sub), "%s%s/", folder, name);
-				collectTree(env, camera, ctx, sub, depth + 1, outline, idx, maxEntries);
+				collectTree(env, camera, ctx, sub, depth + 1, outline, idx,
+							maxEntries, skipped);
 			}
 		}
 		gp_list_free(dirs);
@@ -388,7 +399,9 @@ Java_com_mav_cameranativebridge_NativeCameraInterface_nativeGetFileList(
 		return nullptr; /* OOM pending */
 
 	jint idx = 0;
-	collectTree(env, camera, guard.ctx(), "/", 0, buf, &idx, LIST_MAX_ITEMS);
+	jint skipped = 0;
+	collectTree(env, camera, guard.ctx(), "/", 0, buf, &idx, LIST_MAX_ITEMS, &skipped);
+	LOGI("LensLink listing: %d entries (%d empty-name skipped)", idx, skipped);
 
 	jobjectArray exact = env->NewObjectArray(idx, stringClass, nullptr);
 	for (jint i = 0; i < idx; ++i) {

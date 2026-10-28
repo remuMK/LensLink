@@ -385,7 +385,16 @@ camera_prepare_canon_eos_capture(Camera *camera, GPContext *context) {
 
 		if (!strcmp(params->deviceinfo.Model,"Canon PowerShot G5 X")) mode = 0x11;
 		if (!strcmp(params->deviceinfo.Model,"Canon EOS M6 Mark II")) mode = 0x1;
+		/* LensLink: over WiFi the M50m2 behaves like its DIGIC-8
+		 * sibling M6 Mark II — remote mode 0x15 only routes the
+		 * viewfinder to USB; the network client needs the classic
+		 * PC remote mode 1. */
+		if (!strcmp(params->deviceinfo.Model,"Canon EOS M50m2") &&
+		    (camera->port->type == GP_PORT_PTPIP)) mode = 0x1;
 		C_PTP (ptp_canon_eos_setremotemode(params, mode));
+		GP_LOG_E ("EOS capture prepare: model='%s' transport=%s remote mode 0x%x",
+			  params->deviceinfo.Model ? params->deviceinfo.Model : "?",
+			  (camera->port->type == GP_PORT_PTPIP) ? "PTP/IP" : "USB", mode);
 	} else {
 		C_PTP (ptp_canon_eos_setremotemode(params, 1));
 	}
@@ -399,7 +408,12 @@ skip:
 	/* Get the initial bulk set of event data */
 	C_PTP (ptp_check_eos_events (params));
 
-	if (ptp_operation_issupported(params, PTP_OC_CANON_EOS_RequestDevicePropValue)) {
+	if (ptp_operation_issupported(params, PTP_OC_CANON_EOS_RequestDevicePropValue) &&
+	    (camera->port->type != GP_PORT_PTPIP)) {
+		/* LensLink: skip over PTP/IP — each of these requests times
+		 * out after ~5.5s on the M50m2 over WiFi (0x02fa), stalling
+		 * every session by up to 4x5.5s; the values are not needed
+		 * for listing, thumbnails or capture. */
 		/* request additional properties */
 		/* if one of this is not present GeneralError will be returned, so only check
 		 * and log, but do not error return */
@@ -463,17 +477,17 @@ skip:
 
 	{
 		/*
-		 * LensLink: the M50m2 keeps upstream's USB-only skip (like the
-		 * M6 Mark II, output=8 can disturb tethered capture there), but
-		 * over PTP/IP it needs this exact sequence — otherwise
-		 * EOS_GetViewFinderData answers 0xa102 "Camera Not Ready"
-		 * forever because the viewfinder stream is never routed to the
-		 * network client (MOBILE2 output bit).
+		 * LensLink: the M50m2 keeps upstream's USB-only skip (like
+		 * the M6 Mark II). The earlier "needs eventmode=2 +
+		 * output=8 over WiFi" attempt is disproven on-device: the
+		 * sets were accepted (0x2001) but GetViewFinderData still
+		 * returned 0xa102 — and prepare now arms remote mode 1 on
+		 * IP instead.
 		 */
 		int on_ip = (camera->port->type == GP_PORT_PTPIP);
 		int need_extra = is_canon_eos_m (params) &&
 			(strcmp(params->deviceinfo.Model,"Canon EOS M6 Mark II") != 0) &&
-			((strcmp(params->deviceinfo.Model,"Canon EOS M50m2") != 0) || on_ip);
+			(strcmp(params->deviceinfo.Model,"Canon EOS M50m2") != 0);
 
 		GP_LOG_E ("EOS capture prepare: model='%s' transport=%s evf-extras=%d",
 			  params->deviceinfo.Model ? params->deviceinfo.Model : "?",

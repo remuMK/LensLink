@@ -237,6 +237,25 @@ fun FilesScreen() {
                 state.withMetadata[file.fullPath] = CameraFileInfo.UNKNOWN
             }
         }
+        // Always-on summary: a fully-cached pass logs no per-file lines at
+        // all, so without this the log goes silent exactly when we need to
+        // know why rows lack dates (dated = real mtime, undated = mtime 0,
+        // unknown = camera returned no info / fetch failed).
+        var dated = 0
+        var undated = 0
+        var unknown = 0
+        for (file in state.files.take(400)) {
+            when (val info = state.withMetadata[file.fullPath]) {
+                null -> {}
+                CameraFileInfo.UNKNOWN -> unknown++
+                else -> if (info.mtimeSec > 0) dated++ else undated++
+            }
+        }
+        Log.i(
+            TAG,
+            "metadata pass: $dated dated, $undated undated, $unknown unknown " +
+                "of ${state.files.size.coerceAtMost(400)} files",
+        )
         if (failures > 0) {
             Log.w(
                 TAG,

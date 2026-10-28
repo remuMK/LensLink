@@ -4947,6 +4947,18 @@ ptp_canon_eos_get_viewfinder_image (PTPParams* params, unsigned char **data, uns
 	return ptp_transaction(params, &ptp, PTP_DP_GETDATA, 0, data, size);
 }
 
+/* LensLink: same operation with a selectable first argument — the classic
+ * 0x00200000 (EOS 1000D trace) and 0x00100000 are both documented; newer
+ * bodies may accept only one of them over the wire. */
+uint16_t
+ptp_canon_eos_get_viewfinder_image_arg (PTPParams* params, uint32_t arg1, unsigned char **data, unsigned int *size)
+{
+	PTPContainer ptp;
+
+	PTP_CNT_INIT(ptp, PTP_OC_CANON_EOS_GetViewFinderData, arg1, 0, 0);
+	return ptp_transaction(params, &ptp, PTP_DP_GETDATA, 0, data, size);
+}
+
 uint16_t
 ptp_canon_eos_get_viewfinder_image_handler (PTPParams* params, PTPDataHandler*handler)
 {
