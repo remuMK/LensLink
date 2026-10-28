@@ -414,6 +414,36 @@ Java_com_mav_cameranativebridge_NativeCameraInterface_nativeCaptureImage(
 }
 
 /* ------------------------------------------------------------------ */
+/* remote-session arming (EOS)                                         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Runs the ptp2 capture preparation (Canon EOS: SetRemoteMode 1, event
+ * mode, capture target) immediately after gp_camera_init. Over PTP/IP
+ * the camera stays on its WiFi "waiting" page until remote mode is set;
+ * arming at connect means the app only reports "connected" once the
+ * camera has actually switched to the remote screen.
+ */
+extern "C" int lenslink_arm_remote (Camera *camera, GPContext *context);
+
+JNIEXPORT void JNICALL
+Java_com_mav_cameranativebridge_NativeCameraInterface_nativeArmRemote(
+		JNIEnv *env, jobject /*this*/)
+{
+	SessionGuard guard(env);
+	Camera *camera = guard.cameraOrThrow();
+	if (camera == nullptr)
+		return;
+
+	int ret = lenslink_arm_remote(camera, guard.ctx());
+	if (ret < GP_OK) {
+		gpThrow(env, ret, "lenslink_arm_remote");
+		return;
+	}
+	LOGI("arm remote: ok");
+}
+
+/* ------------------------------------------------------------------ */
 /* storage (SD card)                                                   */
 /* ------------------------------------------------------------------ */
 

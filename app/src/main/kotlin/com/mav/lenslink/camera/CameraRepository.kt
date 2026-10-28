@@ -309,6 +309,29 @@ class CameraRepository(context: Context) {
         Log.i(TAG, "connected: ${info.model} battery=${info.batteryText}")
         metaMutex.withLock { noInfoSet.clear() }
         thumbNoInfo.clear()
+        /*
+         * Arm the EOS remote session NOW, not lazily on the first
+         * preview/capture. Over WiFi the camera sits on its "connect app"
+         * (IP/MAC) page until SetRemoteMode runs; landing the user in
+         * Files before that meant listing and warm-up raced a camera
+         * that was not actually ready (and after a camera restart the
+         * viewfinder then never armed at all). Retry patiently: the
+         * camera's PTP endpoint answers basic ops while its UI is still
+         * finishing the WiFi handshake.
+         */
+        var armed = false
+        for (attempt in 1..4) {
+            try {
+                onCamera { i -> i.armRemote() }
+                armed = true
+                Log.i(TAG, "remote session armed (attempt $attempt)")
+                break
+            } catch (t: Throwable) {
+                Log.w(TAG, "remote arm attempt $attempt failed", t)
+                delay(1_500)
+            }
+        }
+        if (!armed) Log.w(TAG, "remote arm failed after retries — continuing degraded")
         _connection.value = ConnState.Connected(kind, info)
         refreshControls()
         startLiveness(kind)

@@ -4796,6 +4796,18 @@ camera_canon_eos_capture (Camera *camera, CameraCaptureType type, CameraFilePath
 		GP_LOG_E ("EOS capture: no object event within %d s — the photo may be "
 			  "stuck in host-transfer (SDRAM) mode; check the CaptureDestination "
 			  "log above and the camera's card", EOS_CAPTURE_TIMEOUT/1000);
+		/* LensLink: best-effort un-wedge. A capture whose object
+		 * event never arrived leaves the camera waiting for a host
+		 * fetch; dropping remote mode off/on ends that wait (this
+		 * is what a reconnect does, without the reconnect). Reset
+		 * the viewfinder flags so the preview re-enables itself on
+		 * the next tick. */
+		LOG_ON_PTP_E (ptp_canon_eos_setremotemode (params, 0));
+		LOG_ON_PTP_E (ptp_canon_eos_setremotemode (params, 1));
+		params->canon_viewfinder_on = 0;
+		params->evf_armed = 0;
+		ptp_check_eos_events (params);
+		GP_LOG_E ("EOS capture: re-armed remote mode after missing object event");
 		return GP_ERROR_TIMEOUT;
 	}
 	GP_LOG_D ("object has OFC 0x%x", oi.ObjectFormat);

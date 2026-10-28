@@ -585,6 +585,20 @@ camera_prepare_capture (Camera *camera, GPContext *context)
 	return GP_OK;
 }
 
+/* LensLink: arm the remote session at CONNECT time instead of lazily on
+ * the first preview/capture. Over PTP/IP the camera stays on its WiFi
+ * "waiting" (IP/MAC) page until remote mode is actually set — the app
+ * used to land in Files while the camera was still on that page, so
+ * listing/warm-up ran against a half-ready device and the first
+ * preview/capture raced the handshake. Non-static: the bridge calls it
+ * through libptp2. */
+int
+lenslink_arm_remote (Camera *camera, GPContext *context)
+{
+	GP_LOG_E ("LensLink: arming remote session at connect");
+	return camera_prepare_capture (camera, context);
+}
+
 static int
 camera_unprepare_canon_powershot_capture(Camera *camera, GPContext *context) {
 	PTPParams		*params = &camera->pl->params;

@@ -123,6 +123,7 @@ class NativeCameraInterface(private val appContext: Context) : AutoCloseable {
     private external fun nativeSetConfig(name: String, value: String): Boolean
     private external fun nativeReadConfigText(name: String): String?
     private external fun nativeCaptureImage(): String?
+    private external fun nativeArmRemote()
     private external fun nativeGetStorageInfo(): Array<String>
     private external fun nativeInitWithIp(host: String, port: Int, nativeLibDir: String): Boolean
 
@@ -367,6 +368,17 @@ class NativeCameraInterface(private val appContext: Context) : AutoCloseable {
     suspend fun captureImage(): CameraCaptureResult? = withContext(Dispatchers.IO) {
         check(opened) { "camera is closed" }
         nativeCaptureImage()?.let { CameraCaptureResult.from(it) }
+    }
+
+    /**
+     * Runs the ptp2 capture preparation right after the session opens
+     * (Canon EOS over WiFi: SetRemoteMode 1 etc.). The camera only leaves
+     * its WiFi "waiting" page once remote mode is set, so this is the
+     * readiness gate for declaring the connection established.
+     */
+    suspend fun armRemote() = withContext(Dispatchers.IO) {
+        check(opened) { "camera is closed" }
+        nativeArmRemote()
     }
 
     /**
