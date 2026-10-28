@@ -4728,6 +4728,18 @@ camera_canon_eos_capture (Camera *camera, CameraCaptureType type, CameraFilePath
 	CR (camera_trigger_canon_eos_capture (camera, context));
 
 	memset (&oi, 0, sizeof(oi));
+	/* LensLink: snapshot the object handles BEFORE the release. Over
+	 * PTP/IP the M50 II's WiFi stack never announces a CARD-written
+	 * capture in the EOS event stream (the log proved it: destination
+	 * set to 1, accepted by the camera, StorageInfoChanged seen, still
+	 * no ObjectAdded for 15 s). The wait loop below therefore falls
+	 * back to diffing the storage listing — the proven Nikon
+	 * broken-capture pattern in camera_capture. */
+	PTPObjectHandles beforehandles = {0};
+	int listdiff_ok = (PTP_RC_OK == ptp_getobjecthandles (params, PTP_HANDLER_SPECIAL, 0x000000, 0x000000, &beforehandles));
+	if (!listdiff_ok)
+		GP_LOG_E ("handle snapshot before capture failed — listing-diff fallback unavailable");
+	struct timeval lastdiff = {0, 0};
 	do {
 		C_PTP_REP_MSG (ptp_check_eos_events (params),
 			       _("Canon EOS Get Changes failed"));
@@ -4787,10 +4799,55 @@ camera_canon_eos_capture (Camera *camera, CameraCaptureType type, CameraFilePath
 		if (oi.Handle)
 			break;
 
+		/* LensLink: ~3 s after the release without an object event,
+		 * diff the storage listing against the pre-capture snapshot —
+		 * the new card file is in there even though the event stream
+		 * stays silent over IP. Re-diffed at most once per second. */
+		if (listdiff_ok && (time_since (capture_start) > 3*1000) && (time_since (lastdiff) > 1000)) {
+			PTPObjectHandles	handles = {0};
+			uint32_t		newobject = 0;
+
+			lastdiff = time_now();
+			if (PTP_RC_OK == ptp_getobjecthandles (params, PTP_HANDLER_SPECIAL, 0x000000, 0x000000, &handles)) {
+				for_each (uint32_t*, phandle, handles) {
+					unsigned int	j;
+					PTPObject	*ob;
+
+					for (j = 0; j < beforehandles.len; j++)
+						if (beforehandles.val[j] == *phandle)
+							break;
+					if (j != beforehandles.len)
+						continue;
+					if (PTP_RC_OK != ptp_object_want (params, *phandle, PTPOBJECT_OBJECTINFO_LOADED, &ob))
+						continue;
+					/* a directory, like a fresh 100CANON */
+					if (ob->oi.ObjectFormat == PTP_OFC_Association)
+						continue;
+					newobject = *phandle;
+					break;
+				}
+				free_array (&handles);
+			}
+			if (newobject) {
+				GP_LOG_E ("EOS capture: no object event — found new card object 0x%08x via listing diff", newobject);
+				if (GP_OK == add_object_to_fs_and_path (camera, newobject, path, context)) {
+					PTPObject	*ob;
+					if (PTP_RC_OK == ptp_object_want (params, newobject, PTPOBJECT_OBJECTINFO_LOADED, &ob)) {
+						oi.Handle	= newobject;
+						oi.StorageID	= ob->oi.StorageID;
+						oi.ObjectFormat	= ob->oi.ObjectFormat;
+					}
+				}
+				if (oi.Handle)
+					break;
+			}
+		}
+
 		/* not really proven to help keep it on */
 		CR (camera_keep_device_on (camera));
 		gp_context_idle (context);
 	} while (waiting_for_timeout (&back_off_wait, capture_start, EOS_CAPTURE_TIMEOUT));
+	free_array (&beforehandles);
 
 	if (oi.Handle == 0) {
 		GP_LOG_E ("EOS capture: no object event within %d s — the photo may be "
@@ -6300,8 +6357,13 @@ camera_trigger_canon_eos_capture (Camera *camera, GPContext *context)
 
 	if (!params->eos_captureenabled)
 		camera_prepare_capture (camera, context);
-	else
-		CR( camera_canon_eos_update_capture_target(camera, context, -1));
+	else {
+		/* LensLink: non-fatal — the camera answers 0x2019 Device Busy here
+		 * on back-to-back captures; the card destination is forced
+		 * unconditionally below. */
+		if (camera_canon_eos_update_capture_target(camera, context, -1) != GP_OK)
+			GP_LOG_E ("update_capture_target at trigger failed — forcing card below");
+	}
 
 	/* Get all pending event data from the camera, otherwise capture might return busy. */
 	ptp_check_eos_events (params);

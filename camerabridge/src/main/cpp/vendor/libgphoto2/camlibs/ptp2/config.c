@@ -478,7 +478,12 @@ skip:
 		C_PTP (ptp_check_eos_events (params));
 	}
 
-	CR (camera_canon_eos_update_capture_target( camera, context, -1 ));
+	/* LensLink: non-fatal — the camera answers 0x2019 Device Busy right
+	 * after a capture or mid-handshake; failing here killed the whole
+	 * connect-time arm (the app degraded) for a setting that is forced
+	 * again at trigger time anyway. */
+	if (camera_canon_eos_update_capture_target( camera, context, -1 ) != GP_OK)
+		GP_LOG_E ("update_capture_target during prepare failed — continuing");
 
 	ptp_free_deviceinfo (&params->deviceinfo);
 	C_PTP (ptp_getdeviceinfo(params, &params->deviceinfo));
