@@ -350,8 +350,13 @@ void collectTree(JNIEnv *env, Camera *camera, GPContext *ctx,
 						(*skipped)++;
 					continue;
 				}
-				char full[1024];
-				snprintf(full, sizeof(full), "%s%s", folder, name);
+				char full[1152];
+				const char *value = nullptr;
+				gp_list_get_value(files, i, &value);
+				if (value && *value)
+					snprintf(full, sizeof(full), "%s%s\t%s", folder, name, value);
+				else
+					snprintf(full, sizeof(full), "%s%s", folder, name);
 				jstring jstr = env->NewStringUTF(full);
 				if (jstr) {
 					env->SetObjectArrayElement(outline, (*idx)++, jstr);

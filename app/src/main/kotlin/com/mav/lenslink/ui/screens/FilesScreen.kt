@@ -196,6 +196,9 @@ fun FilesScreen() {
                     .filter { it.extension in COMPATIBLE_EXT }
                 // drop metadata/thumbs of files that left the card
                 repo.pruneMetaCache(state.files.map { it.fullPath }.toSet())
+                // warm the thumbnail cache in the background (visible rows
+                // still fetch on demand; this makes scrolling instant)
+                repo.startThumbnailWarmup(state.files)
                 state.loading = false
             } catch (t: Throwable) {
                 state.error = t.message

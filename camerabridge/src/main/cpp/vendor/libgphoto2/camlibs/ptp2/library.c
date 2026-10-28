@@ -3831,8 +3831,13 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 						 * properties were accepted and the stream
 						 * still refuses to start (protocol gap); if
 						 * not, the sets were rejected/lost. */
-						LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFMode));
-						LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice));
+						/* (the 0x9127 requests are skipped over IP:
+						 * they just time out ~5.5s each; the desc
+						 * records are in the event cache anyway) */
+						if (camera->port->type != GP_PORT_PTPIP) {
+							LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFMode));
+							LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice));
+						}
 						ptp_check_eos_events (params);
 						memset (&rdp,0,sizeof(rdp));
 						m_ok = (ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_EVFMode, &rdp) == PTP_RC_OK);
@@ -8336,6 +8341,7 @@ generic_list_func (PTPParams *params, const char *folder, int is_directory, Came
 	 */
 
 	uint32_t storage, parent;
+	unsigned n_info = 0, n_size = 0, n_date = 0;
 
 	CR (find_storage_and_handle_from_path(params, folder, &storage, &parent));
 
@@ -8383,8 +8389,31 @@ generic_list_func (PTPParams *params, const char *folder, int is_directory, Came
 			continue;
 		}
 #endif
-		CR(gp_list_append (list, ob->oi.Filename, NULL));
+		/* LensLink: pass the object-info size/mtime along as the list
+		 * VALUE so callers can surface sizes/dates from the very same
+		 * object cache without one GetObjectInfo round-trip per file
+		 * (over PTP/IP those per-file info fetches time out on the
+		 * M50m2). Format: "<size> <mtime-epoch>". */
+		if (is_directory) {
+			CR(gp_list_append (list, ob->oi.Filename, NULL));
+		} else {
+			char val[40];
+			snprintf (val, sizeof(val), "%u %lu",
+				  (unsigned int)ob->oi.ObjectSize,
+				  (unsigned long)(ob->oi.ModificationDate ?
+				  ob->oi.ModificationDate : ob->oi.CaptureDate));
+			CR(gp_list_append (list, ob->oi.Filename, val));
+			n_info++;
+			if (ob->oi.ObjectSize) n_size++;
+			if (ob->oi.ModificationDate || ob->oi.CaptureDate) n_date++;
+		}
 	}
+
+	/* LensLink: "hollow" object info (no size, no dates) is the signature
+	 * of GetObjectInfo not delivering data over this transport. */
+	if (!is_directory)
+		GP_LOG_E ("object info: %u file entries, %u with size, %u with dates",
+			  n_info, n_size, n_date);
 
 	GP_LOG_D ("returning list with %d %s entries", gp_list_count(list), is_directory ? "directory" : "file");
 	free_array (&handles);

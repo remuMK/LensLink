@@ -51,6 +51,9 @@
 
 typedef struct _CameraFilesystemFile {
 	char *name;
+	/* LensLink: optional value string carried through from the camlib's
+	 * list (used to pass object-info "size mtime" out of the listing). */
+	char *value;
 
 	int info_dirty;
 
@@ -325,6 +328,7 @@ delete_all_files (CameraFilesystem *fs, CameraFilesystemFolder *folder)
 		}
 		next = file->next;
 		free (file->name);
+		free (file->value);
 		free (file);
 		file = next;
 	}
@@ -700,7 +704,7 @@ gp_filesystem_free (CameraFilesystem *fs)
  **/
 static int
 internal_append (CameraFilesystem *fs, CameraFilesystemFolder *f,
-		      const char *filename, GPContext *context)
+		      const char *filename, const char *value, GPContext *context)
 {
 	CameraFilesystemFile **new;
 
@@ -722,6 +726,15 @@ internal_append (CameraFilesystem *fs, CameraFilesystemFolder *f,
 		free (*new);
 		*new = NULL;
 		return (GP_ERROR_NO_MEMORY);
+	}
+	if (value) {
+		(*new)->value = strdup (value);
+		if (!(*new)->value) {
+			free ((*new)->name);
+			free (*new);
+			*new = NULL;
+			return (GP_ERROR_NO_MEMORY);
+		}
 	}
 	(*new)->info_dirty = 1;
 	return (GP_OK);
@@ -752,7 +765,7 @@ gp_filesystem_append (CameraFilesystem *fs, const char *folder,
 		gp_list_free (xlist);
 		CR (ret);
 	}
-	ret = internal_append (fs, f, filename, context);
+	ret = internal_append (fs, f, filename, NULL, context);
 	if (ret == GP_ERROR_FILE_EXISTS) /* not an error here ... just in case we add files twice to the list */
 		ret = GP_OK;
 	return ret;
@@ -833,6 +846,7 @@ delete_file (CameraFilesystem *fs, CameraFilesystemFolder *folder, CameraFilesys
 	*prev = file->next;
 	file->next = NULL;
 	free (file->name);
+	free (file->value);
 	free (file);
 	return (GP_OK);
 }
@@ -965,8 +979,11 @@ gp_filesystem_list_files (CameraFilesystem *fs, const char *folder,
 
 		CR (count = gp_list_count (list));
 		for (y = 0; y < count; y++) {
+			const char *lvalue = NULL;
+
 			CR (gp_list_get_name (list, y, &name));
-			CR (internal_append (fs, f, name, context));
+			gp_list_get_value (list, y, &lvalue);
+			CR (internal_append (fs, f, name, lvalue, context));
 		}
 		gp_list_reset (list);
 	}
@@ -976,7 +993,9 @@ gp_filesystem_list_files (CameraFilesystem *fs, const char *folder,
 	file = f->files;
 	while (file) {
 		/* GP_LOG_D ("Listed '%s'", file->name); */
-		CR (gp_list_append (list, file->name, NULL));
+		/* LensLink: re-emit the value the camlib attached (object-info
+		 * "size mtime"); the FS cache keeps it per file. */
+		CR (gp_list_append (list, file->name, file->value));
 		file = file->next;
 	}
 	return (GP_OK);

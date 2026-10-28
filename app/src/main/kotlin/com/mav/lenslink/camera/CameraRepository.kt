@@ -58,8 +58,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import java.io.File
 import java.security.MessageDigest
+import java.util.Collections
 import java.util.Locale
 import java.util.regex.Pattern
 import android.util.LruCache
@@ -302,6 +304,8 @@ class CameraRepository(context: Context) {
     private suspend fun onConnected(kind: Transport) {
         val info = readInfo(kind)
         Log.i(TAG, "connected: ${info.model} battery=${info.batteryText}")
+        metaMutex.withLock { noInfoSet.clear() }
+        thumbNoInfo.clear()
         _connection.value = ConnState.Connected(kind, info)
         refreshControls()
         startLiveness(kind)
@@ -335,6 +339,7 @@ class CameraRepository(context: Context) {
                 runCatching { i.close() }.onFailure { Log.w(TAG, "camera close failed", it) }
             }
         }
+        warmupJob?.cancel()
         iface = null
         _preview.value = null
         _histogram.value = null
@@ -718,19 +723,35 @@ class CameraRepository(context: Context) {
      * Files screen can paint instantly from the last-known list.
      */
     suspend fun listFiles(): List<CameraFile> = onCamera { i ->
-        i.listFiles().mapNotNull { raw ->
-            val slash = raw.lastIndexOf('/')
-            if (slash <= 0) null
-            else CameraFile(
-                folder = raw.substring(0, slash + 1),
-                name = raw.substring(slash + 1),
+        val seeds = LinkedHashMap<String, CameraFileInfo>()
+        val list = i.listFiles().mapNotNull { raw ->
+            // native entry: "<folder><name>" or "<folder><name>\t<size> <mtime>"
+            // (the tab part is seeded from the camera's object-info cache,
+            // gathered during the listing itself — no extra PTP ops)
+            val tab = raw.indexOf('\t')
+            val path = if (tab >= 0) raw.substring(0, tab) else raw
+            val slash = path.lastIndexOf('/')
+            if (slash <= 0) return@mapNotNull null
+            val file = CameraFile(
+                folder = path.substring(0, slash + 1),
+                name = path.substring(slash + 1),
             )
-        }.also { list ->
-            if (list.isNotEmpty()) _cachedFiles.value = list
-            // always-on summary: shows at a glance whether the listing came
-            // back sane or with (now skipped natively) empty names
-            Log.i(TAG, "listing: ${list.size} files")
+            if (tab >= 0) {
+                val f = raw.substring(tab + 1).split(' ')
+                val size = f.getOrNull(0)?.toLongOrNull() ?: 0L
+                val mtime = f.getOrNull(1)?.toLongOrNull() ?: 0L
+                // seed only REAL values: hollow object info (both 0) is
+                // common over PTP/IP and would just shadow real fetches
+                if (size > 0 || mtime > 0) {
+                    seeds[file.fullPath] = CameraFileInfo(size, mtime, 0, 0, "unknown")
+                }
+            }
+            file
         }
+        listingMeta = seeds
+        Log.i(TAG, "listing: ${list.size} files (${seeds.size} with size/date from object info)")
+        if (list.isNotEmpty()) _cachedFiles.value = list
+        list
     }
 
     /* ------------------------------------------------------------------ */
@@ -747,6 +768,33 @@ class CameraRepository(context: Context) {
     private val thumbDirQ = Mutex()
     /** first-N failure logging for thumbnails (keeps the log readable). */
     private var thumbFailLogged = 0
+
+    /** Per-session "camera has no thumbnail" negative cache (thread-safe). */
+    private val thumbNoInfo: MutableSet<String> = Collections.synchronizedSet(HashSet())
+
+    private var warmupJob: Job? = null
+
+    /**
+     * Background thumbnail warm-up: walks the listing once, pulling every
+     * not-yet-cached thumbnail through the normal memory→disk→camera path.
+     * Visible rows still fetch on demand; this makes scrolling — and the
+     * *next* session, via the disk store — instant. Sequential on the
+     * camera session; visible fetches interleave at the native mutex.
+     */
+    fun startThumbnailWarmup(files: List<CameraFile>) {
+        warmupJob?.cancel()
+        if (files.isEmpty()) return
+        warmupJob = scope.launch {
+            for (file in files) {
+                if (!isActive) break
+                if (thumbCache.get(file.fullPath) != null) continue
+                if (file.fullPath in thumbNoInfo) continue
+                runCatching { thumbnailFor(file) }
+                yield()
+            }
+            Log.i(TAG, "thumbnail warm-up done (${files.size} files)")
+        }
+    }
 
     /** Up to 256 decoded thumbs (~10 MB) resident while browsing. */
     private val thumbCache =
@@ -778,6 +826,7 @@ class CameraRepository(context: Context) {
      */
     suspend fun thumbnailFor(file: CameraFile): ImageBitmap? {
         thumbCache.get(file.fullPath)?.let { return it }
+        if (file.fullPath in thumbNoInfo) return null
         // 1) disk store
         withContext(Dispatchers.IO) {
             runCatching { thumbDiskFile(file.fullPath).takeIf { it.isFile }?.readBytes() }
@@ -790,6 +839,7 @@ class CameraRepository(context: Context) {
         // 2) camera (+ persist)
         val bytes = onCameraOr { i -> i.thumbnailTo(file.folder, file.name) }
         if (bytes == null) {
+            thumbNoInfo.add(file.fullPath)
             thumbFailLogged++
             if (thumbFailLogged <= 3) {
                 Log.w(TAG, "thumbnail: camera returned none for ${file.fullPath}")
@@ -828,6 +878,16 @@ class CameraRepository(context: Context) {
     private var metaPersistPending = false
     private var mtimeZeroLogged = false
     private var noInfoLogged = 0
+
+    /** Per-listing size/date seeds (session-only, not persisted, refreshed
+     * on every [listFiles]); consulted before any per-file PTP fetch. */
+    @Volatile
+    private var listingMeta: Map<String, CameraFileInfo> = emptyMap()
+
+    /** Per-session negative cache for "camera returned no info" paths
+     * (metaMutex-guarded): over PTP/IP most per-file info fetches fail —
+     * re-asking on every reload stole the session from thumbnails/preview. */
+    private val noInfoSet = HashSet<String>()
 
     init {
         scope.launch {
@@ -900,10 +960,18 @@ class CameraRepository(context: Context) {
      * sizes/dates immediately.
      */
     suspend fun fileInfoFor(file: CameraFile): CameraFileInfo {
-        metaMutex.withLock { metaMap[file.fullPath] }?.let { return it }
+        metaMutex.withLock {
+            when {
+                metaMap.containsKey(file.fullPath) -> metaMap[file.fullPath]
+                listingMeta.containsKey(file.fullPath) -> listingMeta[file.fullPath]
+                noInfoSet.contains(file.fullPath) -> CameraFileInfo.UNKNOWN
+                else -> null
+            }
+        }?.let { return it }
         val fresh = onCameraOr { i -> i.fileInfo(file.folder, file.name) }
             ?: CameraFileInfo.UNKNOWN
         if (!fresh.hasSize) {
+            metaMutex.withLock { noInfoSet.add(file.fullPath) }
             noInfoLogged++
             if (noInfoLogged <= 3) {
                 Log.w(TAG, "file metadata: camera returned no info for ${file.name}")
