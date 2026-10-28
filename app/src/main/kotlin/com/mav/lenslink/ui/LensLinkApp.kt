@@ -77,10 +77,23 @@ fun LensLinkApp() {
 
     val conState by repository.connection.collectAsStateWithLifecycle()
     LaunchedEffect(conState) {
-        when (conState) {
-            is ConnState.Connected -> selectedTab = Tab.VIEWFINDER
-            is ConnState.Failed -> selectedTab = Tab.CONNECT
-            else -> Unit
+        when {
+            conState is ConnState.Connected -> {
+                /*
+                 * Files first, live view opt-in: jumping straight to the
+                 * viewfinder blanked through the EOS's camera-side screen
+                 * (capture_preview interrupts it) before the user asked for
+                 * remote viewfinder at all. The Files tab also paints
+                 * instantly from the persisted thumbnail/metadata caches.
+                 */
+                selectedTab = Tab.FILES
+            }
+            conState is ConnState.Failed -> selectedTab = Tab.CONNECT
+            conState is ConnState.Lost -> {
+                // probe-detected drop: back to Connect so the Lost card with
+                // its one-tap reconnect is visible
+                selectedTab = Tab.CONNECT
+            }
         }
     }
 
@@ -91,12 +104,18 @@ fun LensLinkApp() {
                     title = {
                         Column {
                             Text("LensLink")
-                            if (conState is ConnState.Connected) {
-                                Text(
-                                    (conState as ConnState.Connected).info.model,
+                            when (val s = conState) {
+                                is ConnState.Connected -> Text(
+                                    s.info.model,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.primary,
                                 )
+                                is ConnState.Lost -> Text(
+                                    "Not connected",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                else -> Unit
                             }
                         }
                     },

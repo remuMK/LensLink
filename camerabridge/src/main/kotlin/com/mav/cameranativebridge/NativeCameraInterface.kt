@@ -48,6 +48,11 @@ class NativeCameraInterface(private val appContext: Context) : AutoCloseable {
     companion object {
         private const val TAG = "NativeCameraInterface"
         private const val PREVIEW_INTERVAL_MS = 100L
+        private const val PREFS_BRIDGE = "lenslink_bridge"
+        private const val PREF_PTP_GUID = "ptp_client_guid"
+
+        /** Friendly name the camera displays for this client device. */
+        const val DEVICE_NAME = "LensLink"
 
         /** Canon, Inc. */
         const val CANON_VENDOR_ID = 0x04A9
@@ -67,6 +72,28 @@ class NativeCameraInterface(private val appContext: Context) : AutoCloseable {
     }
 
     init { loadNative() }
+
+    /**
+     * Stable 16-byte client GUID in "xx:xx:…:xx" form, minted once per
+     * install and injected into the PTP/IP handshake. Without it the vendored
+     * libgphoto2 regenerates a random GUID every process start (its settings
+     * file is "(null)" on Android), so the camera treats every restart as a
+     * brand-new device: it shows "localhost" as the client name and
+     * reconnecting to an old entry fails with "connection target not found".
+     */
+    private fun ensurePtippGuid(): String {
+        val prefs = appContext.getSharedPreferences(PREFS_BRIDGE, Context.MODE_PRIVATE)
+        val stored = prefs.getString(PREF_PTP_GUID, null)
+        if (stored != null && stored.length == 47 &&
+            stored.count { it == ':' } == 15
+        ) return stored
+        val fresh = (0 until 16).joinToString(":") {
+            "%02x".format(java.util.Random().nextInt(256))
+        }
+        prefs.edit().putString(PREF_PTP_GUID, fresh).apply()
+        Log.i(TAG, "minted new persistent PTP/IP client GUID")
+        return fresh
+    }
 
     /* --------------------------------------------------------------- */
     /* native functions (JNI)                                          */
@@ -98,6 +125,10 @@ class NativeCameraInterface(private val appContext: Context) : AutoCloseable {
     private external fun nativeCaptureImage(): String?
     private external fun nativeGetStorageInfo(): Array<String>
     private external fun nativeInitWithIp(host: String, port: Int, nativeLibDir: String): Boolean
+
+    /** Injects the stable PTP/IP client GUID + device name ("LensLink")
+     *  into the native environment; must precede [nativeInitWithIp]. */
+    private external fun nativeSetIpIdentity(guid: String, name: String)
 
     /* --------------------------------------------------------------- */
     /* lifecycle                                                       */
@@ -138,6 +169,7 @@ class NativeCameraInterface(private val appContext: Context) : AutoCloseable {
         check(!opened) { "already initialized; call close() first" }
         require(host.isNotBlank()) { "host must not be blank" }
         require(port in 1..65535) { "port $port out of range" }
+        nativeSetIpIdentity(ensurePtippGuid(), DEVICE_NAME)
         val libDir = appContext.applicationInfo.nativeLibraryDir
         if (!nativeInitWithIp(host, port, libDir)) {
             Log.e(TAG, "nativeInitWithIp($host, $port) failed")

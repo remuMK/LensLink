@@ -85,6 +85,53 @@
 static uint16_t ptp_ptpip_check_event (PTPParams* params);
 static uint16_t ptp_ptpip_event (PTPParams* params, PTPContainer* event, int wait);
 
+/* ------------------------------------------------------------------
+ * LensLink (Android): process-injected PTP/IP identity + timeouts.
+ *
+ * The app sets these environment variables before gp_camera_init():
+ *   LENSLINK_GUID              16-byte client GUID in "xx:xx:…:xx" form,
+ *                              stable across app restarts. Without it the
+ *                              gphoto2 settings file path resolves to
+ *                              "(null)" on Android, so the GUID silently
+ *                              regenerates every run and the camera treats
+ *                              every app start as a brand-new device
+ *                              ("connection target not found" / the client
+ *                              shows up as "localhost").
+ *   LENSLINK_DEVICE_NAME       friendly name the camera displays for this
+ *                              client (gethostname() is "localhost" there).
+ *   PTPIP_DATA_TIMEOUT_S       per-read socket timeout for steady-state
+ *                              data phases (default 5 s).
+ *   PTPIP_HANDSHAKE_TIMEOUT_S  socket timeout during the initial handshake,
+ *                              while the camera may wait for the user to
+ *                              grant consent on its own screen (default
+ *                              20 s; was 2.5 s hard-wired, which aborted
+ *                              with "gp I/O 7 (-10 Timeout)" whenever the
+ *                              user needed more than 2.5 s to accept).
+ */
+static const char *ptpip_env_nonempty(const char *var) {
+	const char *v = getenv(var);
+	return (v && v[0]) ? v : NULL;
+}
+
+static int ptpip_timeout_env(const char *var, int def) {
+	const char *v = ptpip_env_nonempty(var);
+	if (!v)
+		return def;
+	int n = atoi(v);
+	return ((n > 0) && (n < 3600)) ? n : def;
+}
+
+static int ptpip_data_read_timeout_s(void) {
+	return ptpip_timeout_env("PTPIP_DATA_TIMEOUT_S", 5);
+}
+
+static int ptpip_handshake_read_timeout_s(void) {
+	return ptpip_timeout_env("PTPIP_HANDSHAKE_TIMEOUT_S", 20);
+}
+
+/* defined below, near ptp_nikon_getptpipguid */
+static const char *ptpip_client_device_name (void);
+
 /* send / receive functions */
 uint16_t
 ptp_ptpip_sendreq (PTPParams* params, PTPContainer* req, int dataphase)
@@ -144,13 +191,13 @@ ptp_ptpip_sendreq (PTPParams* params, PTPContainer* req, int dataphase)
 }
 
 static uint16_t
-ptp_ptpip_generic_read (PTPParams *params, int fd, PTPIPHeader *hdr, unsigned char**data) {
+ptp_ptpip_generic_read (PTPParams *params, int fd, PTPIPHeader *hdr, unsigned char**data, int timeout_s) {
 	int	ret, len, curread;
 	unsigned char *xhdr;
 
 	xhdr = (unsigned char*)hdr; curread = 0; len = sizeof (PTPIPHeader);
 	while (curread < len) {
-		ret = ptpip_read_with_timeout (fd, xhdr + curread, len - curread, PTPIP_DEFAULT_TIMEOUT_S, PTPIP_DEFAULT_TIMEOUT_MS);
+		ret = ptpip_read_with_timeout (fd, xhdr + curread, len - curread, timeout_s, PTPIP_DEFAULT_TIMEOUT_MS);
 		if (ret == PTPSOCK_ERR) {
 			ptpip_perror ("read PTPIPHeader");
 			if (ptpip_get_socket_error() == ETIMEDOUT)
@@ -176,7 +223,7 @@ ptp_ptpip_generic_read (PTPParams *params, int fd, PTPIPHeader *hdr, unsigned ch
 	}
 	curread = 0;
 	while (curread < len) {
-		ret = ptpip_read_with_timeout (fd, (*data)+curread, len-curread, PTPIP_DEFAULT_TIMEOUT_S, PTPIP_DEFAULT_TIMEOUT_MS);
+		ret = ptpip_read_with_timeout (fd, (*data)+curread, len-curread, timeout_s, PTPIP_DEFAULT_TIMEOUT_MS);
 		if (ret == PTPSOCK_ERR) {
 			GP_LOG_E ("error %d in reading PTPIP data", ptpip_get_socket_error());
 			free (*data);*data = NULL;
@@ -201,12 +248,12 @@ ptp_ptpip_generic_read (PTPParams *params, int fd, PTPIPHeader *hdr, unsigned ch
 static uint16_t
 ptp_ptpip_cmd_read (PTPParams* params, PTPIPHeader *hdr, unsigned char** data) {
 	ptp_ptpip_check_event (params);
-	return ptp_ptpip_generic_read (params, params->cmdfd, hdr, data);
+	return ptp_ptpip_generic_read (params, params->cmdfd, hdr, data, ptpip_data_read_timeout_s());
 }
 
 static uint16_t
 ptp_ptpip_evt_read (PTPParams* params, PTPIPHeader *hdr, unsigned char** data) {
-	return ptp_ptpip_generic_read (params, params->evtfd, hdr, data);
+	return ptp_ptpip_generic_read (params, params->evtfd, hdr, data, ptpip_data_read_timeout_s());
 }
 
 static uint16_t
@@ -442,14 +489,12 @@ ptp_ptpip_init_command_request (PTPParams* params)
 	unsigned char	guid[16];
 
 	ptp_nikon_getptpipguid(guid);
-#if !defined (WIN32)
-	if (gethostname (hostname, sizeof(hostname)))
-		return PTP_RC_GeneralError;
-#else
-	DWORD hostname_size = (DWORD)sizeof(hostname);
-	if (!GetComputerNameA(hostname, &hostname_size))
-		return PTP_RC_GeneralError;
-#endif
+	{
+		/* LensLink: report a stable, recognizable client name instead of
+		 * Android's "localhost". */
+		const char *devname = ptpip_client_device_name ();
+		snprintf(hostname, sizeof(hostname), "%s", devname);
+	}
 	len = ptpip_initcmd_name + (strlen(hostname)+1)*2 + 4;
 
 	cmdrequest = malloc(len);
@@ -495,7 +540,7 @@ ptp_ptpip_init_command_ack (PTPParams* params)
 	int		i;
 	unsigned short	*name;
 
-	ret = ptp_ptpip_generic_read (params, params->cmdfd, &hdr, &data);
+	ret = ptp_ptpip_generic_read (params, params->cmdfd, &hdr, &data, ptpip_handshake_read_timeout_s());
 	if (ret != PTP_RC_OK)
 		return ret;
 	if (hdr.type != dtoh32(PTPIP_INIT_COMMAND_ACK)) {
@@ -669,6 +714,28 @@ ptp_nikon_getptpipguid (unsigned char* guid) {
 	char* endptr;
 	char* pos;
 
+	/* LensLink: what the app injected wins. The gphoto2 settings store is
+	 * unusable on Android (path "(null)"), so without this every process
+	 * start would mint a fresh GUID and the camera would treat each app
+	 * restart as a new, unregistered device. */
+	const char *injected = ptpip_env_nonempty("LENSLINK_GUID");
+	if (injected && strlen(injected) == 47) {
+		pos = buffer;
+		valid = 1;
+		for (i = 0; i < 16; i++) {
+			val = strtol(injected + i*3, &endptr, 16);
+			if (((*endptr != ':') && (*endptr != 0)) || (endptr != injected + i*3 + 2)) {
+				valid = 0;
+				break;
+			}
+			guid[i] = (unsigned char)val;
+		}
+		if (valid) {
+			GP_LOG_D ("using injected ptpip client GUID (stable across app restarts)");
+			return;
+		}
+	}
+
 	gp_setting_get("ptp2_ip","guid",buffer);
 
 	if (strlen(buffer) == 47) { /* 47 = 16*2 (numbers) + 15 (semi-colons) */
@@ -683,11 +750,6 @@ ptp_nikon_getptpipguid (unsigned char* guid) {
 			guid[i] = (unsigned char)val;
 			pos += 3;
 		}
-		/*printf("GUID ");
-		for (i = 0; i < 16; i++) {
-			printf("%02x:", guid[i]);
-		}
-		printf("\n");*/
 		if (valid)
 			return;
 	}
@@ -704,9 +766,23 @@ ptp_nikon_getptpipguid (unsigned char* guid) {
 	}
 	buffer[47] = 0;
 
-	/*printf("New GUID: %s\n", buffer);*/
+	/*fprintf(stderr, "New GUID: %s\n", buffer);*/
 
+	/* LensLink: persist through the app so it survives process restarts
+	 * (the gp_settings file is "(null)" on Android and unsaveable). */
 	gp_setting_set("ptp2_ip","guid",buffer);
+	GP_LOG_E ("generated a fresh ptpip GUID — it cannot be stored by libgphoto2 "
+			  "on this platform, so the camera will treat us as an unregistered "
+			  "device until the app injects LENSLINK_GUID");
+}
+
+
+/* LensLink: name the camera shows for this client. gethostname() on Android
+ * returns "localhost", which is what the user saw on the camera screen. */
+static const char*
+ptpip_client_device_name (void) {
+	const char *name = ptpip_env_nonempty("LENSLINK_DEVICE_NAME");
+	return name ? name : "LensLink";
 }
 
 

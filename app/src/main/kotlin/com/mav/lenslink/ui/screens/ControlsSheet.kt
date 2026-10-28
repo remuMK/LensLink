@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Lightbulb
@@ -26,12 +27,14 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -41,7 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mav.cameranativebridge.CameraConfig
 import com.mav.lenslink.appContainer
-import com.mav.lenslink.ui.theme.badgeShape
+import kotlin.math.roundToInt
 
 /** Property → display title. Canonical names come from the ptp2 camlib. */
 private val PROPERTY_TITLES = mapOf(
@@ -76,8 +79,6 @@ fun ControlsSheet(onDismiss: () -> Unit) {
     // Refresh once when the sheet opens.
     LaunchedEffect(Unit) { repo.refreshControls() }
 
-    var expandedName by remember { mutableStateOf<String?>(null) }
-
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             Modifier
@@ -109,10 +110,6 @@ fun ControlsSheet(onDismiss: () -> Unit) {
                     PropertyRow(
                         name = name,
                         config = config,
-                        expanded = expandedName == name,
-                        onToggle = {
-                            expandedName = if (expandedName == name) null else name
-                        },
                         onSelect = { repo.setProperty(name, it) },
                     )
                 }
@@ -164,96 +161,157 @@ private fun BulbRow(bulbConfig: CameraConfig?) {
     }
 }
 
+/**
+ * Exposure-triangle properties render as plain M3 Sliders over the camera's
+ * own choice list (WYSIWYG: the slider stops are exactly the values the
+ * camera reports); other choice properties keep a compact chip row, and the
+ * card containers are simple rounded surfaces (no clipping shapes).
+ */
+private val SLIDER_PROPERTIES =
+    setOf("iso", "aperture", "shutterspeed", "exposurecompensation")
+
 @Composable
 private fun PropertyRow(
     name: String,
     config: CameraConfig,
-    expanded: Boolean,
-    onToggle: () -> Unit,
     onSelect: (String) -> Unit,
 ) {
     val title = PROPERTY_TITLES[name] ?: name
     Surface(
-        shape = propertyShape(),
+        shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(
             Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
+                .padding(horizontal = 14.dp, vertical = 10.dp),
         ) {
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
+            if (config.isChoiceType &&
+                config.choices.isNotEmpty() &&
+                name in SLIDER_PROPERTIES &&
+                !config.readonly
             ) {
-                Column {
-                    Text(title, style = MaterialTheme.typography.titleMedium)
-                    if (config.readonly) {
-                        Text(
-                            "read-only on the camera right now",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-                Text(
-                    config.current.ifBlank { "—" },
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-
-            if (expanded && config.isChoiceType && config.choices.isNotEmpty()) {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 10.dp),
-                ) {
-                    config.choices.forEach { choice ->
-                        FilterChip(
-                            selected = choice == config.current,
-                            onClick = { onSelect(choice) },
-                            label = { Text(choice) },
-                        )
-                    }
-                }
-            }
-            if (expanded && config.isToggle) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.padding(top = 10.dp),
-                ) {
-                    FilterChip(
-                        selected = config.current.trim() != "0",
-                        onClick = { onSelect("1") },
-                        label = { Text("On") },
-                    )
-                    FilterChip(
-                        selected = config.current.trim() == "0",
-                        onClick = { onSelect("0") },
-                        label = { Text("Off") },
-                    )
-                }
-            }
-            if (expanded && config.isText && !config.readonly) {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.padding(top = 10.dp),
-                ) {
-                    FilterChip(
-                        selected = false,
-                        onClick = { onSelect(config.current) },
-                        label = { Text("Re-apply “${config.current}”") },
-                    )
-                }
+                ChoiceSlider(title, config, onSelect)
+            } else {
+                ChipsRow(title, config, onSelect)
             }
         }
     }
 }
 
 @Composable
-private fun propertyShape() = badgeShape()
+private fun ChoiceSlider(
+    title: String,
+    config: CameraConfig,
+    onSelect: (String) -> Unit,
+) {
+    val choices = config.choices
+    // snap the thumb to the nearest stop; the labels ARE the camera's values
+    val initial = choices.indexOf(config.current).coerceAtLeast(0)
+    var pos by remember(config.current, choices) { mutableFloatStateOf(initial.toFloat()) }
+    val lastIndex = (choices.size - 1).coerceAtLeast(0)
+
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(title, style = MaterialTheme.typography.titleMedium)
+        Text(
+            choices.getOrNull(pos.roundToInt()) ?: "—",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
+    Slider(
+        value = pos,
+        onValueChange = { pos = it },
+        onValueChangeFinished = {
+            val idx = pos.roundToInt().coerceIn(0, lastIndex)
+            pos = idx.toFloat()
+            choices.getOrNull(idx)?.let(onSelect)
+        },
+        valueRange = 0f..lastIndex.toFloat(),
+        steps = if (lastIndex > 1) lastIndex - 1 else 0,
+        enabled = !config.readonly,
+    )
+}
+
+@Composable
+private fun ChipsRow(
+    title: String,
+    config: CameraConfig,
+    onSelect: (String) -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Column {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            if (config.readonly) {
+                Text(
+                    "read-only on the camera right now",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Text(
+            config.current.ifBlank { "—" },
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
+
+    if (config.isChoiceType && config.choices.isNotEmpty()) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp),
+        ) {
+            config.choices.forEach { choice ->
+                FilterChip(
+                    selected = choice == config.current,
+                    onClick = { onSelect(choice) },
+                    label = {
+                        Text(choice, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                    },
+                )
+            }
+        }
+    }
+    if (config.isToggle) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(top = 8.dp),
+        ) {
+            FilterChip(
+                selected = config.current.trim() != "0",
+                onClick = { onSelect("1") },
+                label = { Text("On") },
+            )
+            FilterChip(
+                selected = config.current.trim() == "0",
+                onClick = { onSelect("0") },
+                label = { Text("Off") },
+            )
+        }
+    }
+    if (config.isText && !config.readonly) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(top = 8.dp),
+        ) {
+            FilterChip(
+                selected = false,
+                onClick = { onSelect(config.current) },
+                label = { Text("Re-apply “${config.current}”") },
+            )
+        }
+    }
+}

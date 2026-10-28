@@ -2,7 +2,8 @@
  * ConnectScreen.kt — auto-discovery dashboard:
  *   • connection status card (model / battery / SD card / library version)
  *   • USB OTG card with permission flow
- *   • Wi-Fi card: camera-AP scan + /24 PTP-IP probe + manual entry
+ *   • Wi-Fi card: camera-AP scan + manual IP entry (PTP-IP, port 15740 is
+ *     the fixed protocol port so no field for it)
  */
 package com.mav.lenslink.ui.screens
 
@@ -47,7 +48,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -60,7 +60,6 @@ import com.mav.lenslink.models.CameraInfo
 import com.mav.lenslink.models.ConnState
 import com.mav.lenslink.models.Transport
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 private const val DEFAULT_CAMERA_IP = "192.168.1.1"
 private const val DEFAULT_CAMERA_PORT = 15740
@@ -88,10 +87,17 @@ fun ConnectScreen() {
         when (connection) {
             is ConnState.Connected -> StatusCard((connection as ConnState.Connected).info)
             is ConnState.Connecting ->
-                ConnectingCard((connection as ConnState.Connecting).transport)
+                ConnectingCard(
+                    (connection as ConnState.Connecting).transport,
+                    (connection as ConnState.Connecting).attempt,
+                )
             is ConnState.Failed -> FailedCard(
                 transport = (connection as ConnState.Failed).transport,
                 message = (connection as ConnState.Failed).message,
+            )
+            is ConnState.Lost -> LostCard(
+                transport = (connection as ConnState.Lost).transport,
+                message = (connection as ConnState.Lost).message,
             )
             ConnState.Idle -> Text(
                 "Not connected yet. Plug the EOS M50 Mark II in over USB, or join " +
@@ -105,6 +111,7 @@ fun ConnectScreen() {
             device = usbDevice,
             hasPermission = usbDevice != null &&
                 permitted.contains(usbDevice!!.deviceId.toString()),
+            busy = connection is ConnState.Connecting,
         )
 
         WifiCard()
@@ -190,7 +197,7 @@ private fun StatusCard(info: CameraInfo) {
 }
 
 @Composable
-private fun ConnectingCard(transport: Transport) {
+private fun ConnectingCard(transport: Transport, attempt: Int) {
     Card(Modifier.fillMaxWidth()) {
         Row(
             Modifier.padding(20.dp),
@@ -198,13 +205,68 @@ private fun ConnectingCard(transport: Transport) {
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             CircularProgressIndicator(Modifier.size(22.dp))
-            Text("Connecting " + over(transport))
+            Text(
+                "Connecting " + over(transport) +
+                    (if (attempt > 1) "  ·  attempt $attempt" else "") +
+                    " — accept the consent prompt on the camera if it shows one",
+            )
         }
     }
 }
 
 private fun over(t: Transport): String =
     if (t == Transport.USB) "over USB" else "over Wi-Fi"
+
+/**
+ * The liveness probe decided the camera stopped answering (Wi-Fi asleep or
+ * hotspot dropped). Renders as "not connected" — deliberately NOT an error
+ * red — with a one-tap reconnect that reuses the last endpoint.
+ */
+@Composable
+private fun LostCard(transport: Transport, message: String) {
+    val repository = appContainer().repository
+    val prefs = LocalContext.current.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(
+        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+    )) {
+        Column(Modifier.padding(20.dp), Arrangement.spacedBy(10.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(
+                    Icons.Rounded.WifiOff,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Column {
+                    Text(
+                        "Not connected",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (transport == Transport.WIFI) {
+                Button(
+                    onClick = {
+                        val lastHost = prefs.getString(PREF_LAST_HOST, null)
+                            ?: DEFAULT_CAMERA_IP
+                        repository.connectWifi(lastHost, DEFAULT_CAMERA_PORT)
+                    },
+                ) {
+                    Icon(Icons.Rounded.Link, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Reconnect")
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun FailedCard(transport: Transport, message: String) {
@@ -233,7 +295,7 @@ private fun FailedCard(transport: Transport, message: String) {
 /* ---------------------------------------------------------------- */
 
 @Composable
-private fun UsbCard(device: UsbDevice?, hasPermission: Boolean) {
+private fun UsbCard(device: UsbDevice?, hasPermission: Boolean, busy: Boolean) {
     val container = appContainer()
     val context = LocalContext.current
     val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
@@ -276,7 +338,7 @@ private fun UsbCard(device: UsbDevice?, hasPermission: Boolean) {
             }
 
             Button(
-                enabled = device != null,
+                enabled = device != null && !busy,
                 onClick = {
                     val d = device ?: return@Button
                     if (container.usb.hasPermission(d)) {
@@ -309,13 +371,12 @@ private fun WifiCard() {
     val container = appContainer()
     val wifi = container.wifi
     val repository = container.repository
-    val scope = rememberCoroutineScope()
     val prefs = LocalContext.current.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     val networks by wifi.networks.collectAsStateWithLifecycle()
-    val probing by wifi.probing.collectAsStateWithLifecycle()
     val scanning by wifi.scanning.collectAsStateWithLifecycle()
     val onCamera by wifi.onCameraNetwork.collectAsStateWithLifecycle()
+    val connection by repository.connection.collectAsStateWithLifecycle()
 
     // seed fields with the last successfully-connected endpoint, if any
     var host by remember {
@@ -323,12 +384,6 @@ private fun WifiCard() {
             prefs.getString(PREF_LAST_HOST, null) ?: DEFAULT_CAMERA_IP,
         )
     }
-    var port by remember {
-        mutableStateOf(
-            (prefs.getInt(PREF_LAST_PORT, DEFAULT_CAMERA_PORT)).toString(),
-        )
-    }
-    var probed by remember { mutableStateOf<List<String>>(emptyList()) }
 
     // Scan results land a few seconds later on throttled platforms.
     LaunchedEffect(Unit) {
@@ -350,37 +405,13 @@ private fun WifiCard() {
                 Text("Wi-Fi (PTP/IP)", style = MaterialTheme.typography.titleMedium)
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilledTonalButton(
-                    enabled = !scanning,
-                    onClick = { wifi.refresh(); wifi.popResults() },
-                ) {
-                    Icon(Icons.Rounded.Refresh, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (scanning) "Scanning…" else "Scan")
-                }
-                OutlinedButton(
-                    enabled = !probing,
-                    onClick = {
-                        scope.launch {
-                            probed = wifi.probeSubnet()
-                            probed.firstOrNull()?.let { found ->
-                                host = found
-                                port = DEFAULT_CAMERA_PORT.toString()
-                                prefs.edit()
-                                    .putString(PREF_LAST_HOST, found)
-                                    .putInt(PREF_LAST_PORT, DEFAULT_CAMERA_PORT)
-                                    .apply()
-                            }
-                        }
-                    },
-                ) {
-                    if (probing) {
-                        CircularProgressIndicator(Modifier.size(16.dp))
-                        Spacer(Modifier.width(8.dp))
-                    }
-                    Text("Probe /24")
-                }
+            FilledTonalButton(
+                enabled = !scanning,
+                onClick = { wifi.refresh(); wifi.popResults() },
+            ) {
+                Icon(Icons.Rounded.Refresh, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text(if (scanning) "Scanning…" else "Scan")
             }
 
             if (networks.isNotEmpty()) {
@@ -396,43 +427,25 @@ private fun WifiCard() {
                 }
             }
 
-            if (probed.isNotEmpty()) {
-                Text(
-                    "PTP-IP listeners: ${probed.joinToString()}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = host,
-                    onValueChange = { host = it },
-                    label = { Text("IP") },
-                    singleLine = true,
-                    modifier = Modifier.weight(2f),
-                )
-                OutlinedTextField(
-                    value = port,
-                    onValueChange = { port = it },
-                    label = { Text("Port") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                )
-            }
+            OutlinedTextField(
+                value = host,
+                onValueChange = { host = it },
+                label = { Text("Camera IP (from the hotspot, e.g. 192.168.1.1)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
 
             Button(
                 onClick = {
-                    val portNum = port.toIntOrNull() ?: DEFAULT_CAMERA_PORT
                     val trimmedHost = host.trim()
-                    // remember the endpoint so a reconnect pre-fills it
+                    // remember the endpoint so a reconnect / Lost-retry pre-fills it
                     prefs.edit()
                         .putString(PREF_LAST_HOST, trimmedHost)
-                        .putInt(PREF_LAST_PORT, portNum)
+                        .putInt(PREF_LAST_PORT, DEFAULT_CAMERA_PORT)
                         .apply()
-                    repository.connectWifi(trimmedHost, portNum)
+                    repository.connectWifi(trimmedHost, DEFAULT_CAMERA_PORT)
                 },
-                enabled = host.isNotBlank(),
+                enabled = host.isNotBlank() && connection !is ConnState.Connecting,
             ) {
                 Icon(Icons.Rounded.Wifi, contentDescription = null)
                 Spacer(Modifier.width(6.dp))

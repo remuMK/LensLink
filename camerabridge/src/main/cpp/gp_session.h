@@ -98,10 +98,14 @@ inline int chooseAbilities(CameraAbilitiesList *abilities, CameraAbilities *out)
 	if (count < GP_OK)
 		return count;
 
+	/* "Canon EOS" / "Canon" match the per-model abilities ptp2 advertises;
+	 * the previous order matched the *generic* "PTP..." abilities first,
+	 * whose first entry is the unrelated "A&K AK120II" placeholder the user
+	 * kept seeing in the UI when the summary read came back empty. */
 	static const char *const preferred[] = {
-		"PTP",
 		"Canon EOS",
 		"Canon",
+		"PTP",
 	};
 
 	for (const char *want : preferred) {

@@ -15,13 +15,27 @@ enum class Transport {
 /** Live connection lifecycle. */
 sealed interface ConnState {
     data object Idle : ConnState
-    data class Connecting(val transport: Transport) : ConnState
+    data class Connecting(
+        val transport: Transport,
+        /** Retry counter shown in the UI ("attempt 2 of 3"). */
+        val attempt: Int = 1,
+    ) : ConnState
     data class Connected(
         val transport: Transport,
         val info: CameraInfo,
     ) : ConnState
 
     data class Failed(
+        val transport: Transport,
+        val message: String,
+    ) : ConnState
+
+    /**
+     * A previously healthy session that liveness probing determined is gone
+     * (camera Wi-Fi asleep/timed out). Renders as "Not connected", keeps the
+     * last endpoint handy so the UI can offer a one-tap reconnect.
+     */
+    data class Lost(
         val transport: Transport,
         val message: String,
     ) : ConnState

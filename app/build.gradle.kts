@@ -108,6 +108,8 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
+    // fullscreen-file-viewer EXIF metadata (aperture, shutter, ISO, …)
+    implementation(libs.androidx.exifinterface)
 
     debugImplementation(libs.compose.ui.tooling)
 }

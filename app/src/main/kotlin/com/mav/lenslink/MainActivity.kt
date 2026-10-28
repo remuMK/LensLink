@@ -44,7 +44,10 @@ class MainActivity : ComponentActivity() {
                         // Session up: keep the process alive in the background.
                         is ConnState.Connected ->
                             CameraControlService.start(this@MainActivity)
-                        // Idle / Connecting / Failed: no live session to serve.
+                        // Idle / Connecting / Failed / Lost (probe decided the
+                        // camera is gone): no live session to serve — stop the
+                        // foreground service but never auto-restart it; the
+                        // user reconnects from the Connect tab.
                         else -> CameraControlService.stop(this@MainActivity)
                     }
                 }

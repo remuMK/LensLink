@@ -15,6 +15,7 @@
 #include "gp_session.h"
 
 #include <cerrno>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 
@@ -636,3 +637,52 @@ fail:
 }
 
 } /* extern "C" */
+
+/* ------------------------------------------------------------------ */
+/* PTP/IP client identity (must be set before nativeInitWithIp)         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Injects the stable LensLink client GUID + friendly device name into the
+ * process environment; the vendored ptpip.c handshake reads them back.
+ *
+ * Why this exists: libgphoto2 persists the client GUID through
+ * gp_setting_set() → "(null)/.config/gphoto/settings", which is unwritable
+ * on Android (see logcat "Can't open settings file for writing"). The GUID
+ * therefore regenerated on every app start and the camera treated each
+ * restart as a brand-new device: peers saw the client as "localhost" and
+ * reconnecting to a previously granted entry failed with
+ * "connection target not found". Kotlin now mints the GUID once and stores
+ * it in SharedPreferences, so the camera keeps recognizing LensLink.
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_mav_cameranativebridge_NativeCameraInterface_nativeSetIpIdentity(
+		JNIEnv *env, jclass /*clazz*/, jstring jGuid, jstring jName)
+{
+	if (jGuid != nullptr) {
+		const char *guid = env->GetStringUTFChars(jGuid, nullptr);
+		if (guid != nullptr) {
+			/* validate: 47 chars, "xx:xx:…:xx" (16 bytes × 2 + 15 colons) */
+			bool valid = strlen(guid) == 47;
+			for (const char *p = guid; valid && *p; p++)
+				if (!isxdigit(static_cast<unsigned char>(*p)) && (*p != ':'))
+					valid = false;
+			if (valid)
+				setenv("LENSLINK_GUID", guid, 1);
+			else
+				LOGE("nativeSetIpIdentity: rejected malformed GUID '%s'", guid);
+			env->ReleaseStringUTFChars(jGuid, guid);
+		}
+	}
+	if (jName != nullptr) {
+		const char *name = env->GetStringUTFChars(jName, nullptr);
+		if (name != nullptr) {
+			if (name[0] != '\0')
+				setenv("LENSLINK_DEVICE_NAME", name, 1);
+			env->ReleaseStringUTFChars(jName, name);
+		}
+	}
+	LOGI("nativeSetIpIdentity: LENSLINK_GUID=%s LENSLINK_DEVICE_NAME=%s",
+		 getenv("LENSLINK_GUID") ? "<stable-guid>" : "(unset)",
+		 getenv("LENSLINK_DEVICE_NAME") ? getenv("LENSLINK_DEVICE_NAME") : "(default LensLink)");
+}
