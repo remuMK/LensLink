@@ -814,6 +814,7 @@ class CameraRepository(context: Context) {
     private var metaMap = LinkedHashMap<String, CameraFileInfo>()
     private var metaPersistPending = false
     private var mtimeZeroLogged = false
+    private var noInfoLogged = 0
 
     init {
         scope.launch {
@@ -889,7 +890,13 @@ class CameraRepository(context: Context) {
         metaMutex.withLock { metaMap[file.fullPath] }?.let { return it }
         val fresh = onCameraOr { i -> i.fileInfo(file.folder, file.name) }
             ?: CameraFileInfo.UNKNOWN
-        if (!fresh.hasSize) return fresh   // unknown info is not cacheable
+        if (!fresh.hasSize) {
+            noInfoLogged++
+            if (noInfoLogged <= 3) {
+                Log.w(TAG, "file metadata: camera returned no info for ${file.name}")
+            }
+            return fresh   // unknown info is not cacheable
+        }
         if (fresh.mtimeSec <= 0 && !mtimeZeroLogged) {
             mtimeZeroLogged = true
             Log.i(

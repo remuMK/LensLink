@@ -21,6 +21,7 @@ package com.mav.lenslink.ui.screens
 
 import android.content.Context
 import android.graphics.BitmapFactory
+import android.util.Log
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.combinedClickable
@@ -146,6 +147,8 @@ private const val PREF_SORT = "files_sort"
 private const val PREF_GRID = "files_grid"
 private const val PREF_MEDIA = "files_media"
 
+private const val TAG = "FilesScreen"
+
 @Composable
 fun FilesScreen() {
     val repo = appContainer().repository
@@ -217,12 +220,29 @@ fun FilesScreen() {
     // Fetch size/date metadata sequentially once per listing; each arrival
     // re-sorts the view automatically (sorting reads withMetadata).
     // Cached entries cost nothing (read-through, persisted on disk).
+    // Failures are logged (first few + total) and left UNKNOWN so a later
+    // reload — e.g. after a capture bumps filesVersion — retries them.
     LaunchedEffect(state.files, connection) {
         if (state.files.isEmpty()) return@LaunchedEffect
+        var failures = 0
         for (file in state.files.take(400)) {
             if (file.fullPath in state.withMetadata) continue
-            state.withMetadata[file.fullPath] =
-                try { repo.fileInfoFor(file) } catch (_: Throwable) { CameraFileInfo.UNKNOWN }
+            try {
+                state.withMetadata[file.fullPath] = repo.fileInfoFor(file)
+            } catch (t: Throwable) {
+                failures++
+                if (failures <= 3) {
+                    Log.w(TAG, "metadata fetch failed for ${file.name}: ${t.message}")
+                }
+                state.withMetadata[file.fullPath] = CameraFileInfo.UNKNOWN
+            }
+        }
+        if (failures > 0) {
+            Log.w(
+                TAG,
+                "file metadata: $failures of ${state.files.size.coerceAtMost(400)} " +
+                    "files failed — those sort by name sequence",
+            )
         }
     }
 
@@ -494,6 +514,37 @@ private fun filterFiles(files: List<CameraFile>, media: MediaFilter): List<Camer
         MediaFilter.VIDEOS -> files.filter { it.isMovie }
     }
 
+private val SEQ_RE = Regex("\\d+")
+
+/** The trailing digit group of a Canon file name — IMG_0042.JPG, _MG_0042.CR3,
+ *  MOV_0042.MP4 → 42. Canon numbers files sequentially in capture order, so
+ *  this is a faithful "how new is this file" key even without any metadata. */
+private fun nameSequence(name: String): Long =
+    SEQ_RE.findAll(name).lastOrNull()?.value?.toLongOrNull() ?: -1L
+
+/**
+ * Date sorts. Real mtimes are only used when EVERY file carries one:
+ * mixing actual timestamps (a few files) with fallback keys (the rest)
+ * floats the dated files — even years-old ones — above everything else,
+ * which is precisely the "newest first shows 2024 photos" bug. With the
+ * fallback the whole list keeps capture order derived from the file
+ * numbering, and the order stops churning while metadata loads in.
+ */
+private fun dateSorted(
+    files: List<CameraFile>,
+    meta: Map<String, CameraFileInfo>,
+    descending: Boolean,
+): List<CameraFile> {
+    val allDated = files.isNotEmpty() &&
+        files.all { (meta[it.fullPath]?.mtimeSec ?: 0L) > 0 }
+    val cmp = if (allDated) {
+        compareBy<CameraFile>({ meta[it.fullPath]?.mtimeSec ?: 0L }, { it.fullPath })
+    } else {
+        compareBy<CameraFile>({ nameSequence(it.name) }, { it.fullPath })
+    }
+    return if (descending) files.sortedWith(cmp.reversed()) else files.sortedWith(cmp)
+}
+
 private fun sortFiles(
     files: List<CameraFile>,
     meta: Map<String, CameraFileInfo>,
@@ -501,20 +552,8 @@ private fun sortFiles(
 ): List<CameraFile> = when (mode) {
     SortMode.NAME_ASC -> files.sortedWith(compareBy { it.name })
     SortMode.NAME_DESC -> files.sortedWith(compareByDescending { it.name })
-    // mtime is the primary key, name the stable tiebreaker, so partially
-    // loaded metadata cannot scramble the order between recompositions.
-    // When the camera reports no timestamp (mtime missing or 0 — Canon over
-    // PTP/IP often does) the sequential file name keeps DATE sorts
-    // meaningful instead of collapsing both directions into the same
-    // name-ascending order ("newest first" that shows the oldest on top).
-    SortMode.DATE_DESC -> files.sortedWith(
-        compareByDescending<CameraFile> { meta[it.fullPath]?.mtimeSec?.takeIf { m -> m > 0 } ?: 0L }
-            .thenByDescending { it.name },
-    )
-    SortMode.DATE_ASC -> files.sortedWith(
-        compareBy<CameraFile> { meta[it.fullPath]?.mtimeSec?.takeIf { m -> m > 0 } ?: 0L }
-            .thenBy { it.name },
-    )
+    SortMode.DATE_DESC -> dateSorted(files, meta, descending = true)
+    SortMode.DATE_ASC -> dateSorted(files, meta, descending = false)
     SortMode.SIZE_DESC ->
         files.sortedWith(
             compareByDescending<CameraFile> { meta[it.fullPath]?.sizeBytes ?: -1L }

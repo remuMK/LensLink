@@ -4016,6 +4016,9 @@ struct _PTPParams {
 	unsigned		evf_kicks_since_frame;
 	unsigned		evf_out_working;
 	int			evf_gaveup_logged;
+	/* one-shot fallback: re-arm the PC remote mode (1) after the EOS-M
+	 * prepare value (0x15) failed to bring the stream up over PTP/IP */
+	int			evf_remotemode_retried;
 
 	/* PTP: caching time for properties, default 2 */
 	int			cachetime;

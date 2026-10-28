@@ -3769,16 +3769,44 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 					 * quickly, single PC kick as before). */
 					if ((kick < maxkicks) && (params->evf_kicks_since_frame < 12)) {
 						uint16_t	bret;
-						val.u16 = 1;
-						bret = ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFMode, &val, PTP_DTC_UINT16);
-						GP_LOG_E ("live view kick %d: EVFMode=1 set -> %04x", params->evf_kicks_since_frame+1, bret);
-						val.u32 = evfout[params->evf_kick_index % evfn];
+						unsigned	kidx = params->evf_kick_index % evfn;
+						/* one-shot over IP: when the stream refuses to
+						 * come up anyway, re-arm the PC remote mode
+						 * with the classic value 1 — the EOS-M
+						 * prepare uses 0x15, which apparently only
+						 * routes the viewfinder over USB; DSLR
+						 * WiFi sessions run with mode 1. */
+						if ((camera->port->type == GP_PORT_PTPIP) &&
+						    !params->evf_remotemode_retried &&
+						    (params->evf_kicks_since_frame >= 4)) {
+							params->evf_remotemode_retried = 1;
+							GP_LOG_E ("live view: re-arming remote mode 1 over IP (prepare used 0x15)");
+							LOG_ON_PTP_E (ptp_canon_eos_setremotemode (params, 1));
+							LOG_ON_PTP_E (ptp_canon_eos_seteventmode (params, 1));
+						}
+						val.u32 = evfout[kidx];
 						params->evf_kick_index = (params->evf_kick_index + 1) % evfn;
 						params->evf_kicks_since_frame++;
 						kick++;
-						bret = ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &val, PTP_DTC_UINT32);
-						GP_LOG_E ("live view kick %d: EVFOutputDevice=%u set -> %04x", params->evf_kicks_since_frame, val.u32, bret);
-						evf_set = val.u32;
+						/* alternate the set order across kicks:
+						 * Canon's own remote software is seen with
+						 * both orders; one of them may be the
+						 * accepted one on this model. */
+						if (params->evf_kicks_since_frame & 1) {
+							bret = ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &val, PTP_DTC_UINT32);
+							GP_LOG_E ("live view kick %u: EVFOutputDevice=%u set -> %04x", params->evf_kicks_since_frame, val.u32, bret);
+							val.u16 = 1;
+							bret = ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFMode, &val, PTP_DTC_UINT16);
+							GP_LOG_E ("live view kick %u: EVFMode=1 set -> %04x", params->evf_kicks_since_frame, bret);
+						} else {
+							val.u16 = 1;
+							bret = ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFMode, &val, PTP_DTC_UINT16);
+							GP_LOG_E ("live view kick %u: EVFMode=1 set -> %04x", params->evf_kicks_since_frame, bret);
+							val.u32 = evfout[kidx];
+							bret = ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &val, PTP_DTC_UINT32);
+							GP_LOG_E ("live view kick %u: EVFOutputDevice=%u set -> %04x", params->evf_kicks_since_frame, val.u32, bret);
+						}
+						evf_set = evfout[kidx];
 						try = 0;
 						ptp_check_eos_events (params);
 						event_start = time_now();
@@ -3787,10 +3815,33 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 					if (params->evf_kicks_since_frame < 12)
 						params->evf_kicks_since_frame = 12;	/* stop kicking, fail fast */
 					if (!params->evf_gaveup_logged) {
+						PTPDevicePropDesc	rdp;
+						int			m_ok, o_ok;
+						unsigned		m_val = 0, o_val = 0;
 						params->evf_gaveup_logged = 1;
-						GP_LOG_E ("LensLink live view: no stream after %d kicks (last rc=0x%04x). "
+						/* read back what the camera believes the EVF
+						 * state is: if it matches what we set, the
+						 * properties were accepted and the stream
+						 * still refuses to start (protocol gap); if
+						 * not, the sets were rejected/lost. */
+						LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFMode));
+						LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice));
+						ptp_check_eos_events (params);
+						memset (&rdp,0,sizeof(rdp));
+						m_ok = (ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_EVFMode, &rdp) == PTP_RC_OK);
+						if (m_ok) m_val = rdp.CurrentValue.u16;
+						ptp_free_devicepropdesc (&rdp);
+						memset (&rdp,0,sizeof(rdp));
+						o_ok = (ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &rdp) == PTP_RC_OK);
+						if (o_ok) o_val = rdp.CurrentValue.u32;
+						ptp_free_devicepropdesc (&rdp);
+						GP_LOG_E ("LensLink live view: no stream after %d kicks (last rc=0x%04x); "
+							  "camera state: EVFMode=%s(%u) EVFOutputDevice=%s(%u). "
 							  "Check that Wireless remote control (EOS Utility) is still armed "
-							  "on the camera, then use Retry.", params->evf_kicks_since_frame, ret);
+							  "on the camera, then use Retry.",
+							  params->evf_kicks_since_frame, ret,
+							  m_ok ? "readable" : "unreadable", m_val,
+							  o_ok ? "readable" : "unreadable", o_val);
 					}
 				}
 				C_PTP_MSG (ret, "get_viewfinder_image failed");
