@@ -71,6 +71,17 @@ android {
             "/META-INF/{AL2.0,LGPL2.1}",
             "META-INF/versions/**",
         )
+        /*
+         * Extract native libs into /data/app/.../lib/arm64. The gphoto2
+         * camlib/iolib layer (libltdl shim) **opendir()s nativeLibraryDir**
+         * to enumerate libptp2.so / liblibusb1.so / libptpip.so and dlopen()s
+         * them by path — zip-embedded entries ("base.apk!/lib/arm64-v8a")
+         * are invisible to a directory scan, so with extractNativeLibs=false
+         * gp_abilities_list_load() reports "Found 0 camera drivers".
+         * NB: this setting lives in the app module; the library's own
+         * packaging block does not propagate to consumers.
+         */
+        jniLibs.useLegacyPackaging = true
     }
 
     lint {
