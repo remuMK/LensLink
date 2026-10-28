@@ -1,7 +1,7 @@
 # camerabridge
 
 Kotlin + JNI bridge over **libgphoto2 / libusb1 / libltdl**, cross-compiled
-for Android (`arm64-v8a`, `armeabi-v7a`) by AGP's external native build.
+for Android (`arm64-v8a`) by AGP's external native build.
 
 Output: `camerabridge-release.aar` — consumed by `:app` and reusable as a
 standalone `com.mav.cameranativebridge` facade.

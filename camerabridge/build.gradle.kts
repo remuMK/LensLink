@@ -13,8 +13,12 @@ android {
         minSdk = 24          // camera_bridge + libgphoto2 need nothing newer
         consumerProguardFiles("consumer-rules.pro")
 
+        /*
+         * arm64-v8a only — the target device fleet is 64-bit; shipping one
+         * ABI drops ~10 MiB of unused armeabi-v7a .so from every APK.
+         */
         ndk {
-            abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))
+            abiFilters.add("arm64-v8a")
         }
 
         externalNativeBuild {

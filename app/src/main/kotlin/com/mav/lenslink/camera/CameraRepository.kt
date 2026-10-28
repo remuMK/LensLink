@@ -183,7 +183,14 @@ class CameraRepository(context: Context) {
             try {
                 stopLiveView()
                 disconnectLocked()      // stays on the native lane
-                val opened = onCamera { open() }
+                _connection.value = ConnState.Connecting(kind)
+                /*
+                 * Open the session directly on the native lane. Do NOT go
+                 * through [onCamera] here: its `iface != null` guard fires
+                 * before the block and would abort the open with
+                 * "no camera session open" on every fresh connection.
+                 */
+                val opened = withContext(nativeDispatcher) { open() }
                 iface = opened
                 onConnected(kind)
             } catch (t: Throwable) {
