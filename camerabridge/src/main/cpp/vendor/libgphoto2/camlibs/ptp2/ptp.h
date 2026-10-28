@@ -3994,6 +3994,11 @@ struct _PTPParams {
 	/* live view enabled */
 	int			inliveview;
 
+	/* EOS: set once the viewfinder stream has delivered a frame. Guards the
+	 * one-shot EVF arm sets in capture_preview (re-issuing them on every
+	 * call would restart the stream); zeroed together with CameraPrivateLibrary. */
+	int			evf_armed;
+
 	/* PTP: caching time for properties, default 2 */
 	int			cachetime;
 

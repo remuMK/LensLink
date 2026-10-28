@@ -3,21 +3,30 @@
  *   • depth-limited listing from gp_camera_folder_list_files; the listing
  *     paints instantly from the repository's persisted cache (metadata +
  *     thumbnails on disk), and only NEW files hit the SD card on refresh
- *   • list/grid view toggle
- *   • tap = metadata/details, long-press = enter selection mode (hold-one)
+ *   • list/grid view toggle + sort menu — both persisted between sessions
+ *   • Photos / Videos segmented filter (also persisted)
+ *   • re-sorting / re-filtering keeps the viewport anchored on the same
+ *     file instead of jumping back to the start of the list
+ *   • tap = fullscreen viewer, long-press = enter selection mode (hold-one)
  *   • PTP thumbnail chips (GetObjectThumb, disk cached)
- *   • fullscreen in-app viewer: streams the original from the camera into a
- *     PRIVATE cache (no public download), decodes downsampled, and shows
- *     full EXIF metadata (aperture / shutter / ISO / focal length / …)
+ *   • fullscreen in-app viewer: cached thumbnail first, streams the original
+ *     from the camera into a PRIVATE cache (no public download), decodes
+ *     downsampled, shows metadata instantly (PTP object info) then EXIF
+ *     (aperture / shutter / ISO / focal length / …), pinch-zoom + rotate
+ *     + one-tap Download button top-right
  *   • single + bulk downloads go to the phone's Downloads folder
  *     (Download/LensLink) with success notifications
  */
 package com.mav.lenslink.ui.screens
 
+import android.content.Context
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,10 +41,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
@@ -45,6 +58,7 @@ import androidx.compose.material.icons.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.RotateRight
 import androidx.compose.material.icons.rounded.SelectAll
 import androidx.compose.material.icons.rounded.Sort
 import androidx.compose.material.icons.rounded.ViewList
@@ -58,12 +72,17 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -72,9 +91,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -105,10 +128,22 @@ private enum class SortMode(val label: String) {
     TYPE("Group by type, newest first"),
 }
 
+/** Photos / videos segmented filter under the header. */
+private enum class MediaFilter(val label: String) {
+    ALL("All"),
+    PHOTOS("Photos"),
+    VIDEOS("Videos"),
+}
+
 private val COMPATIBLE_EXT =
     setOf("JPG", "JPEG", "CR2", "CR3", "MOV", "MP4", "PNG", "AVI", "HEIF", "HEIC")
 
 private val DATE_FMT = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
+
+private const val PREFS_UI = "lenslink_ui"
+private const val PREF_SORT = "files_sort"
+private const val PREF_GRID = "files_grid"
+private const val PREF_MEDIA = "files_media"
 
 @Composable
 fun FilesScreen() {
@@ -118,7 +153,25 @@ fun FilesScreen() {
     val cachedSeed by repo.cachedFiles.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
-    val state = remember { FilesUiState() }
+    val context = LocalContext.current
+    val prefs = remember {
+        context.getSharedPreferences(PREFS_UI, Context.MODE_PRIVATE)
+    }
+    val state = remember {
+        FilesUiState().apply {
+            sort = prefs.getString(PREF_SORT, null)
+                ?.let { name -> SortMode.entries.firstOrNull { it.name == name } }
+                ?: SortMode.DATE_DESC
+            grid = prefs.getBoolean(PREF_GRID, false)
+            media = prefs.getString(PREF_MEDIA, null)
+                ?.let { name -> MediaFilter.entries.firstOrNull { it.name == name } }
+                ?: MediaFilter.ALL
+        }
+    }
+
+    // list/grid scroll states — survive sort & filter changes via the anchor
+    val listState = rememberLazyListState()
+    val gridState = rememberLazyGridState()
 
     // Paint the persisted listing immediately (cache never leaves the SD
     // card in between sessions), then verify against the camera in background.
@@ -166,7 +219,73 @@ fun FilesScreen() {
     }
 
     state.viewer?.let { target ->
-        FullscreenViewer(file = target, onDismiss = { state.viewer = null })
+        FullscreenViewer(
+            file = target,
+            info = state.withMetadata[target.fullPath],
+            onDismiss = { state.viewer = null },
+        )
+    }
+
+    // The visible list = media filter + sort. `metaVersion` re-runs this as
+    // metadata lands so date/size sorts settle correctly.
+    val metaVersion = state.withMetadata.size
+    val visible = remember(state.files, state.sort, state.media, metaVersion) {
+        sortFiles(filterFiles(state.files, state.media), state.withMetadata.toMap(), state.sort)
+    }
+
+    // Changing the sort/filter must NOT throw the user back to the start of
+    // the list: remember which item sat at the top of the viewport and put it
+    // back at the same pixel offset once the list re-orders.
+    var scrollAnchor by remember { mutableStateOf<Pair<String, Int>?>(null) }
+
+    fun captureAnchor() {
+        scrollAnchor = if (state.grid) {
+            visible.getOrNull(gridState.firstVisibleItemIndex)
+                ?.let { it.fullPath to gridState.firstVisibleItemScrollOffset }
+        } else {
+            visible.getOrNull(listState.firstVisibleItemIndex)
+                ?.let { it.fullPath to listState.firstVisibleItemScrollOffset }
+        }
+    }
+
+    fun setSort(mode: SortMode) {
+        captureAnchor()
+        state.sort = mode
+        prefs.edit().putString(PREF_SORT, mode.name).apply()
+    }
+
+    fun setMedia(filter: MediaFilter) {
+        captureAnchor()
+        state.media = filter
+        prefs.edit().putString(PREF_MEDIA, filter.name).apply()
+    }
+
+    fun toggleGrid() {
+        val next = !state.grid
+        state.grid = next
+        prefs.edit().putBoolean(PREF_GRID, next).apply()
+    }
+
+    LaunchedEffect(state.sort, state.media) {
+        val anchor = scrollAnchor ?: return@LaunchedEffect
+        scrollAnchor = null
+        val newIndex = visible.indexOfFirst { it.fullPath == anchor.first }
+        if (newIndex < 0) return@LaunchedEffect
+        if (state.grid) gridState.scrollToItem(newIndex, anchor.second)
+        else listState.scrollToItem(newIndex, anchor.second)
+    }
+
+    fun downloading(file: CameraFile) {
+        scope.launch {
+            try {
+                val result = repo.downloadToPublic(file.folder, file.name)
+                state.savedPath = if (result.savedCount > 0)
+                    "→ ${result.savedToLabel}" else null
+                if (result.failedCount > 0) state.error = "Download failed"
+            } catch (t: Throwable) {
+                state.error = t.message
+            }
+        }
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -188,11 +307,11 @@ fun FilesScreen() {
                 )
             }
 
-            SortMenu(mode = state.sort, onPick = { state.sort = it })
+            SortMenu(mode = state.sort, onPick = ::setSort)
 
-            // grid / list view toggle
+            // grid / list view toggle (persisted)
             FilledTonalIconButton(
-                onClick = { state.grid = !state.grid },
+                onClick = ::toggleGrid,
             ) {
                 Icon(
                     if (state.grid) Icons.Rounded.ViewList else Icons.Rounded.GridView,
@@ -228,7 +347,34 @@ fun FilesScreen() {
             }
         }
 
-        if (state.selecting && state.files.isNotEmpty()) {
+        // Photos / Videos / All segmented filter (persisted)
+        SingleChoiceSegmentedButtonRow(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+        ) {
+            MediaFilter.entries.forEachIndexed { index, filter ->
+                SegmentedButton(
+                    selected = state.media == filter,
+                    onClick = { setMedia(filter) },
+                    shape = SegmentedButtonDefaults.itemShape(
+                        index = index,
+                        count = MediaFilter.entries.size,
+                    ),
+                ) {
+                    Text(
+                        filter.label + when (filter) {
+                            MediaFilter.ALL -> " ${state.files.size}"
+                            MediaFilter.PHOTOS -> " ${state.files.count { !it.isMovie }}"
+                            MediaFilter.VIDEOS -> " ${state.files.count { it.isMovie }}"
+                        },
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
+            }
+        }
+
+        if (state.selecting && visible.isNotEmpty()) {
             val selectedCount = state.selected.size
             Row(
                 Modifier
@@ -238,14 +384,14 @@ fun FilesScreen() {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 TextButton(onClick = {
-                    if (selectedCount == state.files.size) {
+                    if (selectedCount == visible.size) {
                         state.selected.clear()
                     } else {
-                        state.files.forEach { state.selected[it.fullPath] = true }
+                        visible.forEach { state.selected[it.fullPath] = true }
                     }
                 }) {
                     Text(
-                        if (selectedCount == state.files.size)
+                        if (selectedCount == visible.size)
                             "Clear all" else "Select all",
                     )
                 }
@@ -254,7 +400,7 @@ fun FilesScreen() {
                     enabled = selectedCount > 0 && !state.bulkDownloading,
                     onClick = {
                         state.bulkDownloading = true
-                        val picked = state.files.filter { it.fullPath in state.selected }
+                        val picked = visible.filter { it.fullPath in state.selected }
                         scope.launch {
                             try {
                                 val result = repo.bulkDownload(picked.map { it.folder to it.name })
@@ -295,27 +441,25 @@ fun FilesScreen() {
             state.loading && state.files.isEmpty() -> CenterHint("Reading card…", loading = true)
             state.error != null && state.files.isEmpty() ->
                 CenterHint("Listing failed: ${state.error}", loading = false)
+            visible.isEmpty() && state.files.isNotEmpty() -> CenterHint(
+                when (state.media) {
+                    MediaFilter.PHOTOS -> "No photos on the card."
+                    MediaFilter.VIDEOS -> "No videos on the card."
+                    MediaFilter.ALL -> "No compatible files on the card."
+                },
+                loading = false,
+            )
             state.files.isEmpty() -> CenterHint("No compatible files on the card.", loading = false)
             else -> {
-                // read the map size so newly-arrived metadata re-sorts the view
-                val metaVersion = state.withMetadata.size
-                val sorted = sortFiles(state.files, state.withMetadata, state.sort, metaVersion)
-                fun downloading(file: CameraFile) {
-                    scope.launch {
-                        try {
-                            val result = repo.downloadToPublic(file.folder, file.name)
-                            state.savedPath = if (result.savedCount > 0)
-                                "→ ${result.savedToLabel}" else null
-                            if (result.failedCount > 0) state.error = "Download failed"
-                        } catch (t: Throwable) {
-                            state.error = t.message
-                        }
-                    }
-                }
                 if (state.grid) {
-                    FileGrid(files = sorted, state = state, downloading = ::downloading)
+                    FileGrid(files = visible, state = state, gridState = gridState)
                 } else {
-                    FileList(files = sorted, state = state, downloading = ::downloading)
+                    FileList(
+                        files = visible,
+                        state = state,
+                        listState = listState,
+                        downloading = ::downloading,
+                    )
                 }
             }
         }
@@ -329,6 +473,7 @@ private class FilesUiState {
     var error by mutableStateOf<String?>(null)
     var savedPath by mutableStateOf<String?>(null)
     var sort by mutableStateOf(SortMode.DATE_DESC)
+    var media by mutableStateOf(MediaFilter.ALL)
     var selecting by mutableStateOf(false)
     var grid by mutableStateOf(false)
     var bulkDownloading by mutableStateOf(false)
@@ -344,25 +489,45 @@ private class FilesUiState {
 }
 
 /* ------------------------------------------------------------------ */
-/* sorting                                                             */
+/* filtering + sorting                                                 */
 /* ------------------------------------------------------------------ */
+
+private fun filterFiles(files: List<CameraFile>, media: MediaFilter): List<CameraFile> =
+    when (media) {
+        MediaFilter.ALL -> files
+        MediaFilter.PHOTOS -> files.filter { !it.isMovie }
+        MediaFilter.VIDEOS -> files.filter { it.isMovie }
+    }
 
 private fun sortFiles(
     files: List<CameraFile>,
     meta: Map<String, CameraFileInfo>,
     mode: SortMode,
-    @Suppress("UNUSED_PARAMETER") metaVersion: Int,   // re-sorts as metadata lands
 ): List<CameraFile> = when (mode) {
     SortMode.NAME_ASC -> files.sortedWith(compareBy { it.name })
     SortMode.NAME_DESC -> files.sortedWith(compareByDescending { it.name })
-    SortMode.DATE_DESC -> files.sortedWith(compareByDescending { meta[it.fullPath]?.mtimeSec ?: 0L })
-    SortMode.DATE_ASC -> files.sortedWith(compareBy { meta[it.fullPath]?.mtimeSec ?: 0L })
+    // mtime is the primary key, name the stable tiebreaker, so partially
+    // loaded metadata cannot scramble the order between recompositions.
+    SortMode.DATE_DESC -> files.sortedWith(
+        compareByDescending<CameraFile> { meta[it.fullPath]?.mtimeSec ?: 0L }.thenBy { it.name },
+    )
+    SortMode.DATE_ASC -> files.sortedWith(
+        compareBy<CameraFile> { meta[it.fullPath]?.mtimeSec ?: 0L }.thenBy { it.name },
+    )
     SortMode.SIZE_DESC ->
-        files.sortedWith(compareByDescending { meta[it.fullPath]?.sizeBytes ?: -1L })
+        files.sortedWith(
+            compareByDescending<CameraFile> { meta[it.fullPath]?.sizeBytes ?: -1L }
+                .thenBy { it.name },
+        )
     SortMode.SIZE_ASC ->
-        files.sortedWith(compareBy { meta[it.fullPath]?.sizeBytes ?: Long.MAX_VALUE })
+        files.sortedWith(
+            compareBy<CameraFile> { meta[it.fullPath]?.sizeBytes ?: Long.MAX_VALUE }
+                .thenBy { it.name },
+        )
     SortMode.TYPE -> files.sortedWith(
-        compareBy<CameraFile> { it.extension }.thenByDescending { it.name },
+        compareBy<CameraFile> { it.extension }
+            .thenByDescending { meta[it.fullPath]?.mtimeSec ?: 0L }
+            .thenBy { it.name },
     )
 }
 
@@ -398,9 +563,14 @@ private fun SortMenu(mode: SortMode, onPick: (SortMode) -> Unit) {
 private fun FileList(
     files: List<CameraFile>,
     state: FilesUiState,
+    listState: LazyListState,
     downloading: (CameraFile) -> Unit,
 ) {
-    LazyColumn(Modifier.fillMaxSize()) {
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 24.dp),
+    ) {
         items(files, key = { it.fullPath }) { file ->
             FileRow(
                 file = file,
@@ -415,13 +585,14 @@ private fun FileList(
 private fun FileGrid(
     files: List<CameraFile>,
     state: FilesUiState,
-    downloading: (CameraFile) -> Unit,
+    gridState: LazyGridState,
 ) {
     LazyVerticalGrid(
+        state = gridState,
         columns = GridCells.Adaptive(108.dp),
         contentPadding = PaddingValues(
             horizontal = 8.dp,
-            vertical = 4.dp,
+            bottom = 24.dp,
         ),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -613,9 +784,6 @@ private fun FileRow(
                 },
             )
         } else {
-            IconButton(onClick = { state.viewer = file }) {
-                Icon(Icons.Rounded.GridView, contentDescription = "Preview")
-            }
             IconButton(onClick = { downloading(file) }) {
                 Icon(Icons.Rounded.Download, contentDescription = "Download")
             }
@@ -652,6 +820,19 @@ private fun CameraFileInfo.humanSize(): String? {
     }
 }
 
+/** PTP object-info lines for the viewer footer — available before any pixel. */
+private fun CameraFileInfo?.viewerLines(file: CameraFile): List<Pair<String, String>> =
+    buildList {
+        add("File" to file.name)
+        this@viewerLines?.humanSize()?.let { add("Size" to it) }
+        this@viewerLines?.takeIf { it.mtimeSec > 0 }?.let {
+            add("Date" to DATE_FMT.format(Date(it.mtimeSec * 1000)))
+        }
+        val dims = this@viewerLines?.takeIf { it.widthPx > 0 }
+            ?.let { "${it.widthPx} × ${it.heightPx}" }
+        add("Type" to listOfNotNull(file.extension, dims).joinToString(" · "))
+    }
+
 @Composable
 private fun MetaLine(label: String, value: String) {
     Row {
@@ -674,29 +855,63 @@ private fun MetaLine(label: String, value: String) {
 }
 
 /* ------------------------------------------------------------------ */
-/* fullscreen in-app viewer (no public download) + full EXIF details    */
+/* fullscreen in-app viewer (no public download) + details + gestures   */
 /* ------------------------------------------------------------------ */
 
 /**
- * Streams the original file from the camera into the app-private viewer
- * cache, decodes it downsampled to the screen, and shows the full metadata
- * panel (size/date/MIME from PTP object info + EXIF from the JPEG header:
- * aperture, shutter, ISO, focal length, metering…).
+ * Two-stage viewer: the cached thumbnail paints instantly while the original
+ * streams from the camera into the private viewer cache. Metadata shows up
+ * immediately from the (persisted) PTP object info; EXIF lines join once the
+ * original is decoded. The image supports pinch-zoom/pan, double-tap zoom
+ * and a 90°-step rotate; Download copies the original to the phone's
+ * Downloads folder (with its success notification).
  */
 @Composable
-private fun FullscreenViewer(file: CameraFile, onDismiss: () -> Unit) {
+private fun FullscreenViewer(
+    file: CameraFile,
+    info: CameraFileInfo?,
+    onDismiss: () -> Unit,
+) {
     val repo = appContainer().repository
-    var bitmap by remember(file.fullPath) { mutableStateOf<ImageBitmap?>(null) }
-    var busy by remember(file.fullPath) { mutableStateOf(true) }
+    val scope = rememberCoroutineScope()
+
+    // Metadata must not wait for the (multi-second) transfer.
+    var ptpLines by remember(file.fullPath) { mutableStateOf(info.viewerLines(file)) }
     var exifLines by remember(file.fullPath) { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
 
+    // stage 1: cached thumbnail (memory/disk) — paints immediately
+    var thumb by remember(file.fullPath) { mutableStateOf<ImageBitmap?>(null) }
+    // stage 2: full-resolution decode from the streamed original
+    var bitmap by remember(file.fullPath) { mutableStateOf<ImageBitmap?>(null) }
+    var busy by remember(file.fullPath) { mutableStateOf(true) }
+    var saving by remember(file.fullPath) { mutableStateOf(false) }
+
     LaunchedEffect(file.fullPath) {
+        runCatching { repo.thumbnailFor(file) }
+            .onSuccess { if (it != null) thumb = it }
+    }
+
+    LaunchedEffect(file.fullPath) {
+        if (info == null || !info.hasSize) {
+            runCatching { repo.fileInfoFor(file) }
+                .onSuccess { ptpLines = it.viewerLines(file) }
+        }
         val original = runCatching { repo.fetchForViewer(file) }.getOrNull()
         if (original != null) {
             exifLines = withContext(Dispatchers.IO) { parseExif(original) }
             bitmap = withContext(Dispatchers.Default) { decodeForScreen(original) }
         }
         busy = false
+    }
+
+    // pinch zoom + pan (double-tap toggles), rotate in 90° steps
+    var rotation by remember(file.fullPath) { mutableIntStateOf(0) }
+    var scale by remember(file.fullPath) { mutableFloatStateOf(1f) }
+    var pan by remember(file.fullPath) { mutableStateOf(Offset.Zero) }
+    val transform = rememberTransformableState { zoomChange, panChange, _ ->
+        val next = (scale * zoomChange).coerceIn(1f, 8f)
+        scale = next
+        pan = if (next > 1f) pan + panChange else Offset.Zero
     }
 
     Dialog(
@@ -708,7 +923,7 @@ private fun FullscreenViewer(file: CameraFile, onDismiss: () -> Unit) {
             modifier = Modifier.fillMaxSize(),
         ) {
             Column(Modifier.fillMaxSize()) {
-                // header
+                // header: close | name | rotate | download
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -738,6 +953,36 @@ private fun FullscreenViewer(file: CameraFile, onDismiss: () -> Unit) {
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
+                    IconButton(onClick = { rotation = (rotation + 90) % 360 }) {
+                        Icon(
+                            Icons.Rounded.RotateRight,
+                            contentDescription = "Rotate",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                    IconButton(
+                        onClick = {
+                            if (saving) return@IconButton
+                            saving = true
+                            scope.launch {
+                                runCatching { repo.downloadToPublic(file.folder, file.name) }
+                                saving = false
+                            }
+                        },
+                    ) {
+                        if (saving) {
+                            CircularProgressIndicator(
+                                Modifier.size(18.dp),
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        } else {
+                            Icon(
+                                Icons.Rounded.Download,
+                                contentDescription = "Download",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                    }
                 }
 
                 Box(
@@ -747,13 +992,74 @@ private fun FullscreenViewer(file: CameraFile, onDismiss: () -> Unit) {
                     contentAlignment = Alignment.Center,
                 ) {
                     val bmp = bitmap
+                    val t = thumb
                     when {
                         bmp != null -> Image(
                             bitmap = bmp,
                             contentDescription = file.name,
                             contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer {
+                                    scaleX = scale
+                                    scaleY = scale
+                                    rotationZ = rotation.toFloat()
+                                    translationX = pan.x
+                                    translationY = pan.y
+                                }
+                                .transformable(transform)
+                                .pointerInput(file.fullPath) {
+                                    detectTapGestures(
+                                        onDoubleTap = {
+                                            if (scale > 1.01f) {
+                                                scale = 1f
+                                                pan = Offset.Zero
+                                            } else {
+                                                scale = 2.5f
+                                            }
+                                        },
+                                    )
+                                },
                         )
+                        t != null -> Box(
+                            Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Image(
+                                bitmap = t,
+                                contentDescription = file.name,
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                            Surface(
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .padding(16.dp),
+                            ) {
+                                Row(
+                                    Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    if (busy) {
+                                        CircularProgressIndicator(Modifier.size(16.dp))
+                                        Text(
+                                            "Streaming full resolution…",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                        )
+                                    } else if (file.isMovie) {
+                                        Text(
+                                            "Video — use the download button to save it.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                        )
+                                    }
+                                }
+                            }
+                        }
                         busy -> Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center,
@@ -772,7 +1078,9 @@ private fun FullscreenViewer(file: CameraFile, onDismiss: () -> Unit) {
                     }
                 }
 
-                if (exifLines.isNotEmpty()) {
+                // metadata panel — PTP object info instantly, EXIF once decoded
+                val metaLines = ptpLines + exifLines
+                if (metaLines.isNotEmpty()) {
                     Surface(
                         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
                         modifier = Modifier
@@ -784,7 +1092,7 @@ private fun FullscreenViewer(file: CameraFile, onDismiss: () -> Unit) {
                             Modifier.padding(12.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
-                            exifLines.forEach { (label, value) ->
+                            metaLines.forEach { (label, value) ->
                                 MetaLine(label, value)
                             }
                         }

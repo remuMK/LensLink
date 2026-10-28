@@ -37,6 +37,7 @@
 
 #include <gphoto2/gphoto2-library.h>
 #include <gphoto2/gphoto2-port-log.h>
+#include <gphoto2/gphoto2-port-info-list.h>
 #include <gphoto2/gphoto2-setting.h>
 
 #include "libgphoto2/i18n.h"
@@ -460,33 +461,49 @@ skip:
 	/* Initialize time for camera_keep_device_on polling */
 	params->starttime = time_now();
 
-	/* run this only on EOS M, not on PowerShot SX */
-	/* I lost track where it is needed.
-	 * Need it:
-	 * + EOS M10
-	 * + PowerShot SX 720HS
-	 * + PowerShot G9x mark II
-	 *
-	 * NOT NEEDED for EOS M6 Mark II ... this behaves like a regular EOS no-M and will disable tethering if we set output=8.
-	 */
-	if (	is_canon_eos_m (params) &&
-		(strcmp(params->deviceinfo.Model,"Canon EOS M6 Mark II") != 0)&&
-		(strcmp(params->deviceinfo.Model,"Canon EOS M50m2") != 0)
-	) {
-		/* This code is needed on EOS m3 at least. might not be needed on others ... mess :/ */
-		PTPPropValue ct_val;
+	{
+		/*
+		 * LensLink: the M50m2 keeps upstream's USB-only skip (like the
+		 * M6 Mark II, output=8 can disturb tethered capture there), but
+		 * over PTP/IP it needs this exact sequence — otherwise
+		 * EOS_GetViewFinderData answers 0xa102 "Camera Not Ready"
+		 * forever because the viewfinder stream is never routed to the
+		 * network client (MOBILE2 output bit).
+		 */
+		int on_ip = (camera->port->type == GP_PORT_PTPIP);
+		int need_extra = is_canon_eos_m (params) &&
+			(strcmp(params->deviceinfo.Model,"Canon EOS M6 Mark II") != 0) &&
+			((strcmp(params->deviceinfo.Model,"Canon EOS M50m2") != 0) || on_ip);
 
-		GP_LOG_D ("EOS M detected");
+		GP_LOG_E ("EOS capture prepare: model='%s' transport=%s evf-extras=%d",
+			  params->deviceinfo.Model ? params->deviceinfo.Model : "?",
+			  on_ip ? "PTP/IP" : "USB", need_extra);
 
-		C_PTP (ptp_canon_eos_seteventmode(params, 2));
-		ct_val.u32 = 0x0008;
-		C_PTP (ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &ct_val, PTP_DTC_UINT32));
+		/* run this only on EOS M, not on PowerShot SX */
+		/* I lost track where it is needed.
+		 * Need it:
+		 * + EOS M10
+		 * + PowerShot SX 720HS
+		 * + PowerShot G9x mark II
+		 *
+		 * NOT NEEDED for EOS M6 Mark II ... this behaves like a regular EOS no-M and will disable tethering if we set output=8.
+		 */
+		if (need_extra) {
+			/* This code is needed on EOS m3 at least. might not be needed on others ... mess :/ */
+			PTPPropValue ct_val;
+
+			GP_LOG_D ("EOS M detected");
+
+			LOG_ON_PTP_E (ptp_canon_eos_seteventmode(params, 2));
+			ct_val.u32 = 0x0008;
+			LOG_ON_PTP_E (ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &ct_val, PTP_DTC_UINT32));
 
 #ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
-		usleep(1000*1000); /* 1 second */
+			usleep(1000*1000); /* 1 second */
 #endif
 
-		C_PTP (ptp_check_eos_events (params));
+			C_PTP (ptp_check_eos_events (params));
+		}
 	}
 	return GP_OK;
 }

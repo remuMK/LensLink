@@ -3624,12 +3624,35 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 			int			try = 0;
 			struct timeval		event_start;
 
-			int			blindLiveViewSet = 0;
+			/*
+			 * LensLink: EVFOutputDevice ("Camera Output") is a mask:
+			 * 1=TFT 2=PC 4=MOBILE 8=MOBILE2 (see the decoded table in
+			 * config.c). Over USB the "PC" routes the viewfinder data;
+			 * over PTP/IP Canon's own Wi-Fi remote arms one of the
+			 * MOBILE bits. The kick loop below cycles the candidates
+			 * until the camera starts streaming.
+			 */
+			uint32_t		evfout[4];
+			int			evfn = 1;
+			int			kick = 0, maxkicks = 1;
 			SET_CONTEXT_P(params, context);
 
 			if (!params->eos_captureenabled)
 				camera_prepare_capture (camera, context);
 			memset (&dpd,0,sizeof(dpd));
+
+			if (camera->port->type == GP_PORT_PTPIP) {
+				evfout[0] = 10; /* PC + MOBILE2 */
+				evfout[1] = 8;  /* MOBILE2 */
+				evfout[2] = 4;  /* MOBILE */
+				evfout[3] = 2;  /* PC (last resort over WiFi) */
+				evfn = 4;
+				maxkicks = 8;   /* two passes over the candidates */
+			} else {
+				evfout[0] = 2;  /* PC, as before */
+				evfn = 1;
+				maxkicks = 1;
+			}
 
 			/* do not set it everytime, it will cause delays */
 			ret = ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_EVFMode, &dpd);
@@ -3638,6 +3661,15 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 				 * sometimes never delivered -> make that visible instead of
 				 * silently skipping the live view enable below. */
 				GP_LOG_E ("reading EOS EVFMode device prop failed: %04x", ret);
+				if ((camera->port->type == GP_PORT_PTPIP) && !params->evf_armed) {
+					/* blind arm: without EVFMode=1 the camera stays
+					 * "not ready" and every GetViewFinderData
+					 * answers 0xa102. */
+					uint16_t	bret;
+					val.u16 = 1;
+					bret = ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFMode, &val, PTP_DTC_UINT16);
+					GP_LOG_E ("liveview arm: blind EVFMode=1 -> %04x", bret);
+				}
 			} else if ((dpd.CurrentValue.u16 != 1)) {
 				/* 0 means off, 1 means on */
 				val.u16 = 1;
@@ -3652,6 +3684,18 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 			/* see config.c what kind of values we have ... it seems to be a mask. bit 0 is TFT, bit 1 PC, bit 2 MOBILE, bit 3 MOBILE2? */
 			if (ret != PTP_RC_OK) {
 				GP_LOG_E ("reading EOS EVFOutputDevice device prop failed: %04x", ret);
+				/* over PTP/IP the event cache usually never delivers this
+				 * prop; the kick loop below cycles the candidate output
+				 * devices instead. */
+			} else if (camera->port->type == GP_PORT_PTPIP) {
+				if ((dpd.CurrentValue.u32 & 0x0c) == 0) {
+					/* no MOBILE/MOBILE2 bit -> the network client never
+					 * gets viewfinder data; add MOBILE2 and keep the
+					 * other bits (e.g. 2 "PC" becomes 10 "PC+MOBILE2"). */
+					val.u32 = (dpd.CurrentValue.u32 & ~1u) | 8u;
+					C_PTP_MSG (ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &val, PTP_DTC_UINT32),
+						   "setval of evf outputmode to %u failed (curval is %d)!", val.u32, dpd.CurrentValue.u32);
+				}
 			} else if ((dpd.CurrentValue.u32 & ~1) == 0) {
 				/* 2 means PC, 1 means TFT */
 				val.u32 = 2;
@@ -3686,18 +3730,21 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 					 * that cache), or report stale values there. The guided pre-set
 					 * above then silently does nothing and the camera keeps returning
 					 * 0xa102 "Camera Not Ready" forever.
-					 * Blind-set both props once and give the camera another stretch of
-					 * time to switch into live view, exactly what Canon's own remote
-					 * apps do. USB path is unaffected (first frame returns quickly). */
-					if (!blindLiveViewSet) {
+					 * Blind-set EVFMode and cycle the candidate EVFOutputDevice
+					 * values (PC+MOBILE2 / MOBILE2 / MOBILE / PC), exactly what
+					 * Canon's own remote apps do; give the camera 3 seconds
+					 * between kicks. USB path is unaffected (first frame returns
+					 * quickly, single PC kick as before). */
+					if (kick < maxkicks) {
 						uint16_t	bret;
-						blindLiveViewSet = 1;
 						val.u16 = 1;
 						bret = ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFMode, &val, PTP_DTC_UINT16);
-						GP_LOG_E ("live view kick: EVFMode=1 set -> %04x", bret);
-						val.u32 = 2;
+						GP_LOG_E ("live view kick %d/%d: EVFMode=1 set -> %04x", kick+1, maxkicks, bret);
+						val.u32 = evfout[kick % evfn];
 						bret = ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &val, PTP_DTC_UINT32);
-						GP_LOG_E ("live view kick: EVFOutputDevice=2 set -> %04x", bret);
+						GP_LOG_E ("live view kick %d/%d: EVFOutputDevice=%u set -> %04x", kick+1, maxkicks, val.u32, bret);
+						kick++;
+						try = 0;
 						ptp_check_eos_events (params);
 						event_start = time_now();
 						continue;
@@ -3764,6 +3811,7 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 							xdata = xdata+len;
 						}
 						free (data);
+						params->evf_armed = 1;	/* stream is up; stop re-arming on every call */
 						SET_CONTEXT_P(params, NULL);
 						return GP_OK;
 					}
