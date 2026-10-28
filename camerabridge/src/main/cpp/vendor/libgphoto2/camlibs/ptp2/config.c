@@ -307,7 +307,14 @@ camera_canon_eos_update_capture_target(Camera *camera, GPContext *context, int v
 					break;
 				}
 			}
-			GP_LOG_D ("Card value is %d",cardval);
+			/* LensLink: print the whole enum — "value 2" on the M50m2
+			 * over IP decides whether the card value is 1 or 2. */
+			GP_LOG_E ("update_capture_target: CaptureDestination enum (%u entries):",
+				  dpd.FORM.Enum.NumberOfValues);
+			for (i=0;i<dpd.FORM.Enum.NumberOfValues;i++)
+				GP_LOG_E ("update_capture_target:   enum[%u] = 0x%08x",
+					  i, dpd.FORM.Enum.SupportedValue[i].u32);
+			GP_LOG_E ("update_capture_target: card value chosen = 0x%08x", cardval);
 		}
 		if (cardval == -1) {
 			/* https://github.com/gphoto/gphoto2/issues/383 ... we dont get an enum, but the value is 2 ... */
@@ -346,8 +353,12 @@ camera_canon_eos_update_capture_target(Camera *camera, GPContext *context, int v
 
 	/* otherwise we get DeviceBusy for some reason */
 	if (ct_val.u32 != dpd.CurrentValue.u32) {
-		C_PTP_MSG (ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_CaptureDestination, &ct_val, PTP_DTC_UINT32),
-			   "setdevicepropvalue of capturetarget to 0x%x failed", ct_val.u32);
+		uint16_t	setret = ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_CaptureDestination, &ct_val, PTP_DTC_UINT32);
+		if (setret != PTP_RC_OK)
+			GP_LOG_E ("setdevicepropvalue of capturetarget to 0x%x failed (0x%04x)", ct_val.u32, setret);
+		else
+			GP_LOG_E ("update_capture_target: destination set to 0x%08x (cache said 0x%08x)",
+				  ct_val.u32, dpd.CurrentValue.u32);
 		if (ct_val.u32 == PTP_CANON_EOS_CAPTUREDEST_HD) {
 			uint16_t	ret;
 #if 0
@@ -413,16 +424,25 @@ camera_prepare_canon_eos_capture(Camera *camera, GPContext *context) {
 			  params->deviceinfo.Model ? params->deviceinfo.Model : "?",
 			  (camera->port->type == GP_PORT_PTPIP) ? "PTP/IP" : "USB", mode);
 		if (camera->port->type == GP_PORT_PTPIP) {
-			/* LensLink: normalize the camera's output route to the
-			 * WiFi default (8). The PREVIOUS session's unprepare
-			 * leaves EVFOutputDevice at 0 ("no output") camera-side,
-			 * and the legacy ViewfinderOn stream then has no route;
-			 * first-ever sessions stream because the camera boots
-			 * with the default, later sessions on the same power
-			 * cycle never re-arm it. */
-			PTPPropValue evfout;
-			evfout.u32 = 8;
-			LOG_ON_PTP_E (ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &evfout, PTP_DTC_UINT32));
+			/* LensLink: heal a poisoned output route ONLY. The
+			 * previous session's unprepare leaves EVFOutputDevice
+			 * at 0 ("no output") camera-side and the legacy
+			 * ViewfinderOn stream then has no route — restore the
+			 * WiFi default 8 in that case. But do NOT force 8 when
+			 * the camera already reports a working route: the
+			 * unconditional set broke live view on the first
+			 * session (whatever the camera's own default is, it
+			 * was streaming with it). */
+			PTPDevicePropDesc	epd;
+			memset (&epd, 0, sizeof(epd));
+			if ((PTP_RC_OK == ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &epd)) &&
+			    (epd.CurrentValue.u32 == 0)) {
+				PTPPropValue evfout;
+				evfout.u32 = 8;
+				GP_LOG_E ("EOS capture prepare: EVFOutputDevice was 0 — restoring WiFi default 8");
+				LOG_ON_PTP_E (ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &evfout, PTP_DTC_UINT32));
+			}
+			ptp_free_devicepropdesc (&epd);
 		}
 	} else {
 		C_PTP (ptp_canon_eos_setremotemode(params, 1));

@@ -4737,8 +4737,8 @@ camera_canon_eos_capture (Camera *camera, CameraCaptureType type, CameraFilePath
 	 * broken-capture pattern in camera_capture. */
 	PTPObjectHandles beforehandles = {0};
 	int listdiff_ok = (PTP_RC_OK == ptp_getobjecthandles (params, PTP_HANDLER_SPECIAL, 0x000000, 0x000000, &beforehandles));
-	if (!listdiff_ok)
-		GP_LOG_E ("handle snapshot before capture failed — listing-diff fallback unavailable");
+	GP_LOG_E ("EOS capture: listing snapshot %s (rc=%s, %u objects known to camera)",
+		  listdiff_ok ? "ok" : "FAILED", listdiff_ok ? "OK" : "fail", beforehandles.len);
 	struct timeval lastdiff = {0, 0};
 	do {
 		C_PTP_REP_MSG (ptp_check_eos_events (params),
@@ -4826,7 +4826,12 @@ camera_canon_eos_capture (Camera *camera, CameraCaptureType type, CameraFilePath
 					newobject = *phandle;
 					break;
 				}
+				if (!newobject)
+					GP_LOG_E ("listing diff: no new object (before=%u now=%u)",
+						  beforehandles.len, handles.len);
 				free_array (&handles);
+			} else {
+				GP_LOG_E ("listing diff: GetObjectHandles failed — camera refused the listing");
 			}
 			if (newobject) {
 				GP_LOG_E ("EOS capture: no object event — found new card object 0x%08x via listing diff", newobject);
@@ -6387,19 +6392,16 @@ camera_trigger_canon_eos_capture (Camera *camera, GPContext *context)
 
 	if (have_eos_prop(params, PTP_VENDOR_CANON, PTP_DPC_CANON_EOS_CaptureDestination)) {
 		C_PTP (ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_CaptureDestination, &dpd));
-		GP_LOG_E ("EOS capture: CaptureDestination cache=%u (1=card, 4=host-transfer) — setting card",
+		GP_LOG_E ("EOS capture: CaptureDestination cache=%u — setting the camera's CARD value",
 			  dpd.CurrentValue.u32);
-		/* LensLink: photos must land on the card. Set UNCONDITIONALLY —
-		 * the property cache over IP can be stale (it reported card
-		 * while the camera still captured to SDRAM, and a cache-only
-		 * read never talks to the camera). */
-		{
-			uint32_t	card_dest = 1;
-			uint16_t	sret = ptp_canon_eos_setdevicepropvalue (
-				params, PTP_DPC_CANON_EOS_CaptureDestination,
-				&card_dest, PTP_DTC_UINT32);
-			GP_LOG_E ("EOS capture: set CaptureDestination=1 -> 0x%04x", sret);
-		}
+		/* LensLink: set the camera's OWN card value (via
+		 * update_capture_target's enum/cache logic), not a hardcoded 1 —
+		 * this camera reported cache=2, and per gphoto2's rule
+		 * ("current != HD => current is the card value") 2 may BE the
+		 * card destination on this model; forcing 1 may have been
+		 * invalid and landed nowhere. */
+		if (camera_canon_eos_update_capture_target (camera, context, 1) != GP_OK)
+			GP_LOG_E ("EOS capture: setting card destination failed");
 	}
 
 	if (ptp_operation_issupported(params, PTP_OC_CANON_EOS_RemoteReleaseOn)) {
