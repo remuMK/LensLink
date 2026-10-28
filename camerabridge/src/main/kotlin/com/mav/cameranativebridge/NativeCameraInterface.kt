@@ -79,11 +79,20 @@ class NativeCameraInterface(private val appContext: Context) : AutoCloseable {
     private external fun nativeClose()
     private external fun nativeVersion(): String
 
+    /** PTP GetObjectThumb; null when the camera has no thumbnail. */
+    private external fun nativeGetFileThumbnail(folder: String, fileName: String): ByteArray?
+
+    /** "sizeBytes\tmtimeSec\twidth\theight\tMIME"; null when unavailable. */
+    private external fun nativeGetFileInfo(folder: String, fileName: String): String?
+
     /* camera_control.cpp — control surface */
     private external fun nativeGetSummary(): String
     private external fun nativeGetCameraModel(): String
     private external fun nativeListConfigNames(): Array<String>
-    private external fun nativeGetConfig(name: String): Array<String>?
+
+    /** `[label, type, readonly, current, choice0…]`; null when name unknown.
+     *  Unfilled (dropped) slots can still surface as null — Kotlin side is null-safe. */
+    private external fun nativeGetConfig(name: String): Array<String?>?
     private external fun nativeSetConfig(name: String, value: String): Boolean
     private external fun nativeReadConfigText(name: String): String?
     private external fun nativeCaptureImage(): String?
@@ -221,6 +230,26 @@ class NativeCameraInterface(private val appContext: Context) : AutoCloseable {
         check(opened) { "camera is closed" }
         nativeDownloadFileTo(folder, fileName, sink.fd)
     }
+
+    /**
+     * Camera-side thumbnail (PTP GetObjectThumb) as JPEG bytes, or null when
+     * the camera did not generate one for this object.
+     */
+    @Synchronized
+    fun thumbnailTo(folder: String, fileName: String): ByteArray? {
+        check(opened) { "camera is closed" }
+        return nativeGetFileThumbnail(folder, fileName)
+    }
+
+    /**
+     * Per-file metadata from the camlib filesystem layer. Returns null
+     * when the camera does not expose an object-info entry for this path.
+     */
+    suspend fun fileInfo(folder: String, fileName: String): CameraFileInfo =
+        withContext(Dispatchers.IO) {
+            check(opened) { "camera is closed" }
+            CameraFileInfo.from(nativeGetFileInfo(folder, fileName))
+        }
 
     /* --------------------------------------------------------------- */
     /* helpers                                                         */

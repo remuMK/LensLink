@@ -35,16 +35,21 @@ data class CameraConfig(
         const val TYPE_BUTTON = 7
         const val TYPE_DATE = 8
 
-        fun from(name: String, raw: Array<String>): CameraConfig? {
-            if (raw.size < 5) return null
-            val type = raw[1].toIntOrNull() ?: return null
+        /**
+         * Null-tolerant by design: JNI unfilled slots historically surfaced as
+         * null elements (r8-tracked NPE on `CharSequence.length()`), and the
+         * native side may still return null when the widget vanished.
+         */
+        fun from(name: String, raw: Array<String?>?): CameraConfig? {
+            if (raw == null || raw.size < 5) return null
+            val type = raw[1]?.toIntOrNull() ?: return null
             return CameraConfig(
                 name = name,
-                label = raw[0],
+                label = raw[0] ?: "",
                 type = type,
                 readonly = raw[2] == "1",
-                current = raw[3],
-                choices = raw.drop(4).filter { it.isNotEmpty() },
+                current = raw[3] ?: "",
+                choices = raw.drop(4).filterNotNull().filter { it.isNotEmpty() },
             )
         }
     }
@@ -109,4 +114,40 @@ data class CameraStorage(
             )
         }
     }
+}
+
+/**
+ * Per-file metadata parsed from `"sizeBytes\tmtimeSec\twidth\theight\tMIME"`.
+ * Zero / "unknown" fields mean the camera did not report them.
+ */
+data class CameraFileInfo(
+    /** Exact file size in bytes, or -1 when unknown. */
+    val sizeBytes: Long,
+    /** Last-modified epoch seconds, 0 when unknown. */
+    val mtimeSec: Long,
+    /** Pixel width, 0 when the camera did not report it. */
+    val widthPx: Int,
+    /** Pixel height, 0 when the camera did not report it. */
+    val heightPx: Int,
+    /** MIME type, e.g. "image/jpeg"; "unknown" when absent. */
+    val mime: String,
+) {
+    companion object {
+        val UNKNOWN = CameraFileInfo(-1L, 0L, 0, 0, "unknown")
+
+        fun from(raw: String?): CameraFileInfo {
+            if (raw.isNullOrBlank()) return UNKNOWN
+            val f = raw.split('\t')
+            return CameraFileInfo(
+                sizeBytes = f.getOrNull(0)?.toLongOrNull() ?: -1L,
+                mtimeSec = f.getOrNull(1)?.toLongOrNull() ?: 0L,
+                widthPx = f.getOrNull(2)?.toIntOrNull() ?: 0,
+                heightPx = f.getOrNull(3)?.toIntOrNull() ?: 0,
+                mime = f.getOrNull(4).orEmpty().ifEmpty { "unknown" },
+            )
+        }
+    }
+
+    /** true when the size came from the camera rather than "unknown". */
+    val hasSize: Boolean get() = sizeBytes >= 0
 }

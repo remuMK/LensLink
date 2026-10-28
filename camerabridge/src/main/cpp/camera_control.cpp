@@ -282,7 +282,12 @@ Java_com_mav_cameranativebridge_NativeCameraInterface_nativeGetConfig(
 							 : 0;
 
 	jclass stringClass = env->FindClass("java/lang/String");
-	jobjectArray out = env->NewObjectArray(5 + nChoices, stringClass, nullptr);
+	/* pre-fill EVERY slot with "" — choice lookups can fail for some ptp2
+	 * properties ("no enumeration/range in table code"), and unset slots used
+	 * to surface as nulls that crashed CameraConfig.from() in Kotlin. */
+	jstring emptySlot = env->NewStringUTF("");
+	jobjectArray out = env->NewObjectArray(5 + nChoices, stringClass,
+											emptySlot ? emptySlot : nullptr);
 	char typeBuf[16];
 	snprintf(typeBuf, sizeof(typeBuf), "%d", (int) type);
 	char roBuf[16];

@@ -3624,6 +3624,7 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 			int			try = 0;
 			struct timeval		event_start;
 
+			int			blindLiveViewSet = 0;
 			SET_CONTEXT_P(params, context);
 
 			if (!params->eos_captureenabled)
@@ -3632,7 +3633,12 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 
 			/* do not set it everytime, it will cause delays */
 			ret = ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_EVFMode, &dpd);
-			if ((ret == PTP_RC_OK) && (dpd.CurrentValue.u16 != 1)) {
+			if (ret != PTP_RC_OK) {
+				/* obtainable ONLY from the EOS event cache; over WiFi it is
+				 * sometimes never delivered -> make that visible instead of
+				 * silently skipping the live view enable below. */
+				GP_LOG_E ("reading EOS EVFMode device prop failed: %04x", ret);
+			} else if ((dpd.CurrentValue.u16 != 1)) {
 				/* 0 means off, 1 means on */
 				val.u16 = 1;
 				ret = ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFMode, &val, PTP_DTC_UINT16);
@@ -3644,8 +3650,9 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 			/* do not set it everytime, it will cause delays */
 			ret = ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &dpd);
 			/* see config.c what kind of values we have ... it seems to be a mask. bit 0 is TFT, bit 1 PC, bit 2 MOBILE, bit 3 MOBILE2? */
-			/* so lets see it only if it does not have any bit set (discounted bit 0) */
-			if ((ret == PTP_RC_OK) && ((dpd.CurrentValue.u32 & ~1) == 0)) {
+			if (ret != PTP_RC_OK) {
+				GP_LOG_E ("reading EOS EVFOutputDevice device prop failed: %04x", ret);
+			} else if ((dpd.CurrentValue.u32 & ~1) == 0) {
 				/* 2 means PC, 1 means TFT */
 				val.u32 = 2;
 				C_PTP_MSG (ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &val, PTP_DTC_UINT32),
@@ -3674,6 +3681,27 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 					if (waiting_for_timeout (&back_off_wait, event_start, 3*1000))
 						continue;
 */
+					/* Over WiFi/PTP-IP some EOS never deliver EVFMode/EVFOutputDevice
+					 * into the event cache (ptp_canon_eos_getdevicepropdesc only reads
+					 * that cache), or report stale values there. The guided pre-set
+					 * above then silently does nothing and the camera keeps returning
+					 * 0xa102 "Camera Not Ready" forever.
+					 * Blind-set both props once and give the camera another stretch of
+					 * time to switch into live view, exactly what Canon's own remote
+					 * apps do. USB path is unaffected (first frame returns quickly). */
+					if (!blindLiveViewSet) {
+						uint16_t	bret;
+						blindLiveViewSet = 1;
+						val.u16 = 1;
+						bret = ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFMode, &val, PTP_DTC_UINT16);
+						GP_LOG_E ("live view kick: EVFMode=1 set -> %04x", bret);
+						val.u32 = 2;
+						bret = ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &val, PTP_DTC_UINT32);
+						GP_LOG_E ("live view kick: EVFOutputDevice=2 set -> %04x", bret);
+						ptp_check_eos_events (params);
+						event_start = time_now();
+						continue;
+					}
 				}
 				C_PTP_MSG (ret, "get_viewfinder_image failed");
 

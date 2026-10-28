@@ -479,6 +479,112 @@ Java_com_mav_cameranativebridge_NativeCameraInterface_nativeDownloadFileTo(
 }
 
 /* ------------------------------------------------------------------------- */
+/* thumbnail of one file (PTP GetObjectThumb ≈ 30–80 KiB JPEG)                 */
+/* returns null when the camera has no thumb for the requested object          */
+/* ------------------------------------------------------------------------- */
+
+JNIEXPORT jbyteArray JNICALL
+Java_com_mav_cameranativebridge_NativeCameraInterface_nativeGetFileThumbnail(
+		JNIEnv *env, jclass /*clazz*/, jstring jFolder, jstring jFile)
+{
+	SessionGuard guard(env);
+	Camera *camera = guard.cameraOrThrow();
+	if (camera == nullptr)
+		return nullptr;
+
+	const char *cFolder = env->GetStringUTFChars(jFolder, nullptr);
+	const char *cFile   = env->GetStringUTFChars(jFile, nullptr);
+	if (cFolder == nullptr || cFile == nullptr) {
+		if (cFolder) env->ReleaseStringUTFChars(jFolder, cFolder);
+		if (cFile)   env->ReleaseStringUTFChars(jFile, cFile);
+		jniThrowImpl(env, "java/lang/IllegalArgumentException", "path args required");
+		return nullptr;
+	}
+
+	CameraFile *file = nullptr;
+	jbyteArray out = nullptr;
+	if (gp_file_new(&file) != GP_OK) {
+		env->ReleaseStringUTFChars(jFolder, cFolder);
+		env->ReleaseStringUTFChars(jFile, cFile);
+		jniThrowImpl(env, "java/io/IOException", "gp_file_new failed");
+		return nullptr;
+	}
+
+	int ret = gp_camera_file_get(camera, cFolder, cFile,
+								 GP_FILE_TYPE_PREVIEW, file, guard.ctx());
+	if (ret < GP_OK) {
+		gp_file_unref(file);
+		env->ReleaseStringUTFChars(jFolder, cFolder);
+		env->ReleaseStringUTFChars(jFile, cFile);
+		LOGI("thumbnail %s%s unavailable: %s (%d)",
+			 cFolder, cFile, gp_result_as_string(ret), ret);
+		return nullptr;     /* no thumb — caller falls back to the icon */
+	}
+
+	const char *data = nullptr;
+	unsigned long size = 0;
+	if (gp_file_get_data_and_size(file, &data, &size) == GP_OK &&
+		data != nullptr && size > 0 && size <= PREVIEW_MAX)
+	{
+		out = env->NewByteArray(static_cast<jsize>(size));
+		if (out != nullptr)
+			env->SetByteArrayRegion(out, 0, static_cast<jsize>(size),
+									reinterpret_cast<const jbyte *>(data));
+	}
+	gp_file_unref(file);
+	env->ReleaseStringUTFChars(jFolder, cFolder);
+	env->ReleaseStringUTFChars(jFile, cFile);
+	return out;
+}
+
+/* ------------------------------------------------------------------------- */
+/* per-file metadata (size / mtime / pixel dims / mime)                        */
+/* serial form: "sizeBytes\tmtimeSeconds\twidth\theight\tMIME"                 */
+/* ------------------------------------------------------------------------- */
+
+JNIEXPORT jstring JNICALL
+Java_com_mav_cameranativebridge_NativeCameraInterface_nativeGetFileInfo(
+		JNIEnv *env, jclass /*clazz*/, jstring jFolder, jstring jFile)
+{
+	SessionGuard guard(env);
+	Camera *camera = guard.cameraOrThrow();
+	if (camera == nullptr)
+		return nullptr;
+
+	const char *cFolder = env->GetStringUTFChars(jFolder, nullptr);
+	const char *cFile   = env->GetStringUTFChars(jFile, nullptr);
+	if (cFolder == nullptr || cFile == nullptr) {
+		if (cFolder) env->ReleaseStringUTFChars(jFolder, cFolder);
+		if (cFile)   env->ReleaseStringUTFChars(jFile, cFile);
+		jniThrowImpl(env, "java/lang/IllegalArgumentException", "path args required");
+		return nullptr;
+	}
+
+	CameraFileInfo info;
+	memset(&info, 0, sizeof(info));
+	int ret = gp_camera_file_get_info(camera, cFolder, cFile, &info, guard.ctx());
+	env->ReleaseStringUTFChars(jFolder, cFolder);
+	env->ReleaseStringUTFChars(jFile, cFile);
+	if (ret < GP_OK) {
+		LOGI("file_info %s%s unavailable: %s (%d)",
+			 cFolder, cFile, gp_result_as_string(ret), ret);
+		return nullptr;
+	}
+
+	char out[196];
+	snprintf(out, sizeof(out),
+			 "%llu\t%lld\t%u\t%u\t%s",
+			 (info.file.fields & GP_FILE_INFO_SIZE)
+				? (unsigned long long) info.file.size : 0ULL,
+			 info.file.fields & GP_FILE_INFO_MTIME
+				? (long long) info.file.mtime : 0LL,
+			 (info.file.fields & GP_FILE_INFO_WIDTH)  ? info.file.width  : 0U,
+			 (info.file.fields & GP_FILE_INFO_HEIGHT) ? info.file.height : 0U,
+			 info.file.fields & GP_FILE_INFO_TYPE ? info.file.type : "unknown");
+	return env->NewStringUTF(out);
+}
+
+/* ------------------------------------------------------------------------- */
 /* graceful, idempotent shutdown                                              */
 /* ------------------------------------------------------------------------- */
 

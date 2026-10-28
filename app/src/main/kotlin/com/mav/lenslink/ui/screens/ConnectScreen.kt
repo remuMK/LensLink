@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -24,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.LinkOff
+import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Usb
 import androidx.compose.material.icons.rounded.Wifi
@@ -56,12 +59,14 @@ import com.mav.lenslink.appContainer
 import com.mav.lenslink.models.CameraInfo
 import com.mav.lenslink.models.ConnState
 import com.mav.lenslink.models.Transport
-import com.mav.lenslink.ui.theme.heroShape
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private const val DEFAULT_CAMERA_IP = "192.168.1.1"
 private const val DEFAULT_CAMERA_PORT = 15740
+private const val PREFS = "lenslink"
+private const val PREF_LAST_HOST = "last_wifi_host"
+private const val PREF_LAST_PORT = "last_wifi_port"
 
 @Composable
 fun ConnectScreen() {
@@ -74,6 +79,8 @@ fun ConnectScreen() {
     Column(
         Modifier
             .fillMaxSize()
+            .imePadding()            // lift the fields above the soft keyboard
+            .navigationBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -111,19 +118,33 @@ fun ConnectScreen() {
 @Composable
 private fun StatusCard(info: CameraInfo) {
     val repository = appContainer().repository
+    /*
+     * MaterialShapes hero shapes (Cookie9Sided etc.) always clip: text placed
+     * near the shape's notches gets cut off, which cut the camera info off.
+     * The dashboard therefore uses a plain rounded container; expressive
+     * shapes stay on non-text decorations elsewhere.
+     */
     Card(
-        shape = heroShape(),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.primaryContainer,
         ),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(Modifier.padding(20.dp), Arrangement.spacedBy(6.dp)) {
-            Text(
-                info.model,
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Rounded.Memory,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    info.model,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+            }
             Text(
                 "Battery: ${info.batteryText}",
                 style = MaterialTheme.typography.bodyMedium,
@@ -289,14 +310,24 @@ private fun WifiCard() {
     val wifi = container.wifi
     val repository = container.repository
     val scope = rememberCoroutineScope()
+    val prefs = LocalContext.current.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     val networks by wifi.networks.collectAsStateWithLifecycle()
     val probing by wifi.probing.collectAsStateWithLifecycle()
     val scanning by wifi.scanning.collectAsStateWithLifecycle()
     val onCamera by wifi.onCameraNetwork.collectAsStateWithLifecycle()
 
-    var host by remember { mutableStateOf(DEFAULT_CAMERA_IP) }
-    var port by remember { mutableStateOf(DEFAULT_CAMERA_PORT.toString()) }
+    // seed fields with the last successfully-connected endpoint, if any
+    var host by remember {
+        mutableStateOf(
+            prefs.getString(PREF_LAST_HOST, null) ?: DEFAULT_CAMERA_IP,
+        )
+    }
+    var port by remember {
+        mutableStateOf(
+            (prefs.getInt(PREF_LAST_PORT, DEFAULT_CAMERA_PORT)).toString(),
+        )
+    }
     var probed by remember { mutableStateOf<List<String>>(emptyList()) }
 
     // Scan results land a few seconds later on throttled platforms.
@@ -336,6 +367,10 @@ private fun WifiCard() {
                             probed.firstOrNull()?.let { found ->
                                 host = found
                                 port = DEFAULT_CAMERA_PORT.toString()
+                                prefs.edit()
+                                    .putString(PREF_LAST_HOST, found)
+                                    .putInt(PREF_LAST_PORT, DEFAULT_CAMERA_PORT)
+                                    .apply()
                             }
                         }
                     },
@@ -389,7 +424,13 @@ private fun WifiCard() {
             Button(
                 onClick = {
                     val portNum = port.toIntOrNull() ?: DEFAULT_CAMERA_PORT
-                    repository.connectWifi(host.trim(), portNum)
+                    val trimmedHost = host.trim()
+                    // remember the endpoint so a reconnect pre-fills it
+                    prefs.edit()
+                        .putString(PREF_LAST_HOST, trimmedHost)
+                        .putInt(PREF_LAST_PORT, portNum)
+                        .apply()
+                    repository.connectWifi(trimmedHost, portNum)
                 },
                 enabled = host.isNotBlank(),
             ) {

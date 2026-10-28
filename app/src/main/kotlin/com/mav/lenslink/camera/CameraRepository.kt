@@ -19,6 +19,7 @@ import android.util.Log
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import com.mav.cameranativebridge.CameraConfig
+import com.mav.cameranativebridge.CameraFileInfo
 import com.mav.cameranativebridge.NativeCameraInterface
 import com.mav.lenslink.models.CameraFile
 import com.mav.lenslink.models.CameraInfo
@@ -27,6 +28,7 @@ import com.mav.lenslink.models.Transport
 import java.io.File
 import java.util.Locale
 import java.util.regex.Pattern
+import android.util.LruCache
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -309,30 +311,33 @@ class CameraRepository(context: Context) {
     /**
      * Starts the decode loop: one `gp_camera_capture_preview` per tick
      * (the ptp2 camlib boots the EOS live view itself on the first call).
+     *
+     * Failing ticks back off progressively: each `capture_preview` burns
+     * several seconds on the single native lane while the camera reports
+     * "Camera Not Ready" (0xa102), and re-querying every 90 ms would starve
+     * every other camera op (capture, config, files, battery).
      */
     fun startLiveView() {
         if (iface == null) return
         if (previewJob?.isActive == true) return
         _liveViewActive.value = true
         previewJob = scope.launch {
-            val sb = StringBuilder()
             var lastNs = 0L
             var frames = 0
-            var histogramScale = 1L
+            var fails = 0
             var first = true
             try {
                 while (isActive && _liveViewActive.value && iface != null) {
-                    val bytes = onCamera {
-                        runCatching { it.capturePreviewOnce() }.getOrElse {
-                            Log.d(TAG, "preview tick skipped: ${it.message}")
-                            null
-                        }
+                    val bytes = onCameraOr { i ->
+                        i.capturePreviewOnce()
                     }
                     if (bytes == null) {
-                        sb.setLength(0)
-                        delay(PREVIEW_INTERVAL_MS)
+                        fails++
+                        // 0.4 s → 1.6 s exponential backoff between attempts
+                        delay(PREVIEW_INTERVAL_MS * (1L shl fails.coerceAtMost(5)))
                         continue
                     }
+                    fails = 0
                     val decoded = withContext(Dispatchers.Default) { decodeFrame(bytes) }
                     decoded.imageBitmap?.let { bmp -> _preview.value = bmp }
                     decoded.histogram?.let { hist -> _histogram.value = hist }
@@ -351,7 +356,6 @@ class CameraRepository(context: Context) {
                         lastNs = now
                     }
                     frames++
-                    histogramScale = frames.toLong()
                     delay(PREVIEW_INTERVAL_MS)
                 }
             } catch (t: Throwable) {
@@ -494,6 +498,49 @@ class CameraRepository(context: Context) {
         }
     }
 
+    /* ------------------------------------------------------------------ */
+    /* thumbnails (PTP GetObjectThumb with an in-memory Lru cache)          */
+    /* ------------------------------------------------------------------ */
+
+    /**-Up to ~10 MB of small decoded thumbs. */
+    private val thumbCache =
+        object : LruCache<String, ImageBitmap>(256) {
+            override fun sizeOf(key: String, value: ImageBitmap): Int = 1
+        }
+
+    /** Decodes to ≤ 256 px (fits a list row and stays cheap in memory). */
+    private fun decodeThumb(bytes: ByteArray): ImageBitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 256) sample *= 2
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+            ?.asImageBitmap()
+    }
+
+    /**
+     * Thumbnail for a camera file; null when the camera has no thumbnail or
+     * the session went away. Cached, so repeated visible rows cost nothing.
+     */
+    suspend fun thumbnailFor(file: CameraFile): ImageBitmap? {
+        thumbCache.get(file.fullPath)?.let { return it }
+        val bytes = onCameraOr { i -> i.thumbnailTo(file.folder, file.name) }
+            ?: return null
+        val thumb = withContext(Dispatchers.Default) { decodeThumb(bytes) }
+        if (thumb != null) thumbCache.put(file.fullPath, thumb)
+        return thumb
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* per-file metadata (CameraFileInfo)                                  */
+    /* ------------------------------------------------------------------ */
+
+    /** One-shot object info; called on demand when the metadata sheet opens. */
+    suspend fun fileInfoFor(file: CameraFile): CameraFileInfo = onCameraOr { i ->
+        i.fileInfo(file.folder, file.name)
+    } ?: CameraFileInfo.UNKNOWN
+
     /**
      * Streams a file from the SD card to app-private external storage; the
      * bridge writes through a raw fd in 256 KiB chunks (OOM-safe for RAWs).
@@ -507,6 +554,29 @@ class CameraRepository(context: Context) {
             _downloadProgress.value = 1f
             out
         }
+
+    /**
+     * Downloads a selection sequentially into the shared `camera/` directory,
+     * reporting overall progress (0..1) so the Files screen can show a bar.
+     * Each item still wraps the download in [onCamera] one at a time — large
+     * selections simply take a while at Wi-Fi PTP/IP bandwidth.
+     */
+    suspend fun bulkDownload(items: List<Pair<String, String>>): File {
+        val dir = File(appContext.getExternalFilesDir(null), "camera").apply { mkdirs() }
+        var done = 0
+        for ((folder, name) in items) {
+            _downloadProgress.value = done.toFloat() / items.size
+            try {
+                onCamera { i -> i.downloadFileTo(folder, name, File(dir, name)) }
+            } catch (t: Throwable) {
+                Log.w(TAG, "bulk download failed for $folder$name", t)
+            }
+            done++
+            _downloadProgress.value = done.toFloat() / items.size
+        }
+        _downloadProgress.value = 1f
+        return dir
+    }
 
     fun clearError() {
         _error.value = null
