@@ -42,6 +42,7 @@ import com.mav.lenslink.models.CameraFile
 import com.mav.lenslink.models.CameraInfo
 import com.mav.lenslink.models.ConnState
 import com.mav.lenslink.models.Transport
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -177,8 +178,28 @@ class CameraRepository(context: Context) {
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
-    private val _lastCapture = MutableStateFlow<CameraFile?>(null)
-    val lastCapture: StateFlow<CameraFile?> = _lastCapture.asStateFlow()
+    /** Status of the last remote capture, for shutter feedback on the
+     *  Viewfinder tab: busy → captured file → saved-to label / error. */
+    data class CaptureState(
+        val busy: Boolean,
+        val file: CameraFile? = null,
+        /** e.g. "Download/LensLink" once the auto-save finished. */
+        val savedToLabel: String? = null,
+        val error: String? = null,
+    )
+
+    private val _captureState = MutableStateFlow<CaptureState?>(null)
+    val captureState: StateFlow<CaptureState?> = _captureState.asStateFlow()
+
+    /** Consecutive failed live-view ticks (0 while streaming); drives the
+     *  "live view couldn't start" card with Retry. */
+    private val _previewFails = MutableStateFlow(0)
+    val previewFails: StateFlow<Int> = _previewFails.asStateFlow()
+
+    /** Bumped when the card content changed (e.g. after a capture) so the
+     *  Files screen can reload without the user pressing Refresh. */
+    private val _filesVersion = MutableStateFlow(0)
+    val filesVersion: StateFlow<Int> = _filesVersion.asStateFlow()
 
     private val _downloadProgress = MutableStateFlow(0f)
     val downloadProgress: StateFlow<Float> = _downloadProgress.asStateFlow()
@@ -220,8 +241,15 @@ class CameraRepository(context: Context) {
         NativeCameraInterface(appContext).init(usbManager, device)
     }
 
-    fun connectWifi(host: String, port: Int) = connect(Transport.WIFI) {
-        NativeCameraInterface(appContext).initWifi(host, port)
+    private var lastWifiHost: String? = null
+    private var lastWifiPort = 15740
+
+    fun connectWifi(host: String, port: Int) {
+        lastWifiHost = host
+        lastWifiPort = port
+        connect(Transport.WIFI) {
+            NativeCameraInterface(appContext).initWifi(host, port)
+        }
     }
 
     private inline fun connect(
@@ -312,7 +340,7 @@ class CameraRepository(context: Context) {
         _histogram.value = null
         _zebra.value = null
         _properties.value = emptyMap()
-        _lastCapture.value = null
+        _captureState.value = null
         _fps.value = 0f
     }
 
@@ -430,6 +458,10 @@ class CameraRepository(context: Context) {
 
     private var previewJob: Job? = null
 
+    /** > 0 while a capture holds the native mutex: the preview loop idles
+     *  instead of fighting for the lock (and kicking the camera) mid-release. */
+    private val previewPaused = AtomicInteger(0)
+
     /**
      * Starts the decode loop: one `gp_camera_capture_preview` per tick
      * (the ptp2 camlib boots the EOS live view itself on the first call).
@@ -447,6 +479,7 @@ class CameraRepository(context: Context) {
         if (iface == null) return
         if (previewJob?.isActive == true) return
         _liveViewActive.value = true
+        _previewFails.value = 0
         previewJob = scope.launch {
             var lastNs = 0L
             var frames = 0
@@ -454,16 +487,24 @@ class CameraRepository(context: Context) {
             var first = true
             try {
                 while (isActive && _liveViewActive.value && iface != null) {
+                    if (previewPaused.get() > 0) {
+                        // capture in progress — keep the native lock free
+                        delay(60)
+                        continue
+                    }
                     val bytes = onCameraOr { i ->
                         i.capturePreviewOnce()
                     }
                     if (bytes == null) {
                         fails++
-                        // 0.4 s → 1.6 s exponential backoff between attempts
-                        delay(PREVIEW_INTERVAL_MS * (1L shl fails.coerceAtMost(5)))
+                        _previewFails.value = fails
+                        // 90 → 360 ms backoff between attempts; the native
+                        // call itself is the slow part when arming fails
+                        delay(PREVIEW_INTERVAL_MS * (1L shl fails.coerceAtMost(2)))
                         continue
                     }
                     fails = 0
+                    _previewFails.value = 0
                     val decoded = withContext(Dispatchers.Default) { decodeFrame(bytes) }
                     decoded.imageBitmap?.let { bmp -> _preview.value = bmp }
                     decoded.histogram?.let { hist -> _histogram.value = hist }
@@ -590,21 +631,78 @@ class CameraRepository(context: Context) {
     /* capture                                                             */
     /* ------------------------------------------------------------------ */
 
-    suspend fun capture(): CameraFile? = try {
-        val result = onCamera { i -> i.captureImage() } ?: error("capture returned nothing")
-        CameraFile(result.folder.ifEmpty { "/" }, result.name)
-    } finally {
-        scope.launch { runCatching { refreshCameraInfo() } }
-    }.also { _lastCapture.value = it }
+    suspend fun capture(): CameraFile? {
+        if (iface == null) error("no camera session open")
+        /*
+         * The EOS release must not fight the preview loop for the native
+         * mutex (a failing arming attempt holds it for seconds) and the
+         * camera must not receive EVF kicks mid-release: pause the ticks
+         * until the capture returns.
+         */
+        previewPaused.incrementAndGet()
+        try {
+            _captureState.value = CaptureState(busy = true)
+            val result = onCamera { i -> i.captureImage() } ?: error("capture returned nothing")
+            val file = CameraFile(result.folder.ifEmpty { "/" }, result.name)
+            _captureState.value = CaptureState(busy = false, file = file)
+            Log.i(TAG, "capture: ${file.folder}${file.name}")
+
+            /*
+             * Follow-ups off the critical path: metadata first so the new
+             * file sorts by its real capture date, then the auto-save into
+             * the public gallery (Downloads/LensLink, with notification),
+             * then the Files-screen listing refresh.
+             */
+            scope.launch {
+                runCatching { fileInfoFor(file) }
+                    .onFailure { Log.w(TAG, "capture: metadata fetch failed", it) }
+                val dl = runCatching { downloadToPublic(file.folder, file.name) }
+                    .onFailure { Log.w(TAG, "capture: auto-download failed", it) }
+                    .getOrNull()
+                val savedOk = dl != null && dl.savedCount > 0
+                _captureState.value = CaptureState(
+                    busy = false,
+                    file = file,
+                    savedToLabel = if (savedOk) dl?.savedToLabel else null,
+                    error = if (!savedOk) "auto-download failed — photo is on the card" else null,
+                )
+                _filesVersion.value += 1
+                refreshCameraInfo()
+            }
+            return file
+        } finally {
+            previewPaused.decrementAndGet()
+        }
+    }
 
     fun captureAsync() {
         scope.launch {
             try {
-                val file = capture()
-                if (file == null) _error.value = "Capture returned no file"
+                if (capture() == null) _error.value = "Capture returned no file"
             } catch (t: Throwable) {
                 Log.w(TAG, "capture failed", t)
+                _captureState.value = CaptureState(busy = false, error = t.message ?: "capture failed")
                 _error.value = t.message
+            }
+        }
+    }
+
+    /**
+     * Manual live-view recovery (Retry card): rebuild the Wi-Fi session so
+     * libgphoto2's EOS arming state starts from scratch, then re-enter live
+     * view. On USB (where arming rarely fails) just restarts the loop.
+     */
+    fun retryLiveView() {
+        val host = lastWifiHost
+        val port = lastWifiPort
+        scope.launch {
+            if (currentTransport() == Transport.WIFI && host != null) {
+                stopLiveView()
+                disconnectLocked()
+                connectWifi(host, port)
+            } else {
+                stopLiveView()
+                startLiveView()
             }
         }
     }
@@ -715,6 +813,7 @@ class CameraRepository(context: Context) {
     private val metaMutex = Mutex()
     private var metaMap = LinkedHashMap<String, CameraFileInfo>()
     private var metaPersistPending = false
+    private var mtimeZeroLogged = false
 
     init {
         scope.launch {
@@ -791,6 +890,14 @@ class CameraRepository(context: Context) {
         val fresh = onCameraOr { i -> i.fileInfo(file.folder, file.name) }
             ?: CameraFileInfo.UNKNOWN
         if (!fresh.hasSize) return fresh   // unknown info is not cacheable
+        if (fresh.mtimeSec <= 0 && !mtimeZeroLogged) {
+            mtimeZeroLogged = true
+            Log.i(
+                TAG,
+                "metadata: camera reports no timestamp (mtime=0) for ${file.name} " +
+                    "— date sorts fall back to file-name order",
+            )
+        }
         metaMutex.withLock { metaMap[file.fullPath] = fresh }
         persistMetaSoon()
         return fresh

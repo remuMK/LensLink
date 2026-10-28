@@ -3635,6 +3635,7 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 			uint32_t		evfout[4];
 			int			evfn = 1;
 			int			kick = 0, maxkicks = 1;
+			uint32_t		evf_set = 0;	/* last EVFOutputDevice we set this call */
 			SET_CONTEXT_P(params, context);
 
 			if (!params->eos_captureenabled)
@@ -3642,12 +3643,19 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 			memset (&dpd,0,sizeof(dpd));
 
 			if (camera->port->type == GP_PORT_PTPIP) {
-				evfout[0] = 10; /* PC + MOBILE2 */
-				evfout[1] = 8;  /* MOBILE2 */
-				evfout[2] = 4;  /* MOBILE */
-				evfout[3] = 2;  /* PC (last resort over WiFi) */
+				/* LensLink: candidates for the M50m2 over WiFi, ordered
+				 * by observed success. 3 = TFT+PC (EOS M / EOS Utility
+				 * "cameraAndHost"), 2 = PC (classic host output, streams
+				 * on DSLRs over IP), 9 = TFT+MOBILE2 (what Canon's mobile
+				 * apps send), 8 = MOBILE2 (camera default after connect).
+				 * 10/11 are deliberately NOT cycled: on the M50m2 they
+				 * can raise the camera's fatal Error 70. */
+				evfout[0] = 3;
+				evfout[1] = 2;
+				evfout[2] = 9;
+				evfout[3] = 8;
 				evfn = 4;
-				maxkicks = 8;   /* two passes over the candidates */
+				maxkicks = 2;   /* kicks per call; index rotates across calls */
 			} else {
 				evfout[0] = 2;  /* PC, as before */
 				evfn = 1;
@@ -3656,6 +3664,24 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 
 			/* do not set it everytime, it will cause delays */
 			ret = ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_EVFMode, &dpd);
+			if ((ret != PTP_RC_OK) && (camera->port->type == GP_PORT_PTPIP) &&
+			    !params->evf_prop_requested &&
+			    ptp_operation_issupported (params, PTP_OC_CANON_EOS_RequestDevicePropValue)) {
+				/* Over PTP/IP the EOS event cache usually never receives
+				 * the live-view props on its own, so getdevicepropdesc
+				 * fails for them forever. Force the camera to emit them
+				 * once (exactly what the prepare block does for
+				 * Owner/Artist), so the reads below and the guided
+				 * EVFOutputDevice handling work with real values. */
+				params->evf_prop_requested = 1;
+				GP_LOG_E ("EVF props not in event cache — requesting EVFMode/EVFOutputDevice");
+				LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFMode));
+				LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice));
+				C_PTP (ptp_check_eos_events (params));
+				ret = ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_EVFMode, &dpd);
+				if (ret == PTP_RC_OK)
+					GP_LOG_E ("EVFMode now readable: cur=%d", dpd.CurrentValue.u16);
+			}
 			if (ret != PTP_RC_OK) {
 				/* obtainable ONLY from the EOS event cache; over WiFi it is
 				 * sometimes never delivered -> make that visible instead of
@@ -3688,17 +3714,21 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 				 * prop; the kick loop below cycles the candidate output
 				 * devices instead. */
 			} else if (camera->port->type == GP_PORT_PTPIP) {
-				if ((dpd.CurrentValue.u32 & 0x0c) == 0) {
-					/* no MOBILE/MOBILE2 bit -> the network client never
-					 * gets viewfinder data; add MOBILE2 and keep the
-					 * other bits (e.g. 2 "PC" becomes 10 "PC+MOBILE2"). */
-					val.u32 = (dpd.CurrentValue.u32 & ~1u) | 8u;
-					C_PTP_MSG (ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &val, PTP_DTC_UINT32),
-						   "setval of evf outputmode to %u failed (curval is %d)!", val.u32, dpd.CurrentValue.u32);
+				GP_LOG_E ("EVFOutputDevice current=%u (mask)", dpd.CurrentValue.u32);
+				if ((params->evf_out_working != 0) &&
+				    (dpd.CurrentValue.u32 != params->evf_out_working)) {
+					/* restore the output device that streamed before
+					 * (e.g. before a capture stopped live view) so the
+					 * stream comes back on the first call */
+					val.u32 = params->evf_out_working;
+					evf_set = val.u32;
+					LOG_ON_PTP_E (ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &val, PTP_DTC_UINT32));
 				}
+				/* otherwise the kick loop owns the value over IP */
 			} else if ((dpd.CurrentValue.u32 & ~1) == 0) {
 				/* 2 means PC, 1 means TFT */
 				val.u32 = 2;
+				evf_set = 2;
 				C_PTP_MSG (ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &val, PTP_DTC_UINT32),
 					   "setval of evf outputmode to 2 failed (curval is %d)!", dpd.CurrentValue.u32);
 			}
@@ -3731,23 +3761,36 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 					 * above then silently does nothing and the camera keeps returning
 					 * 0xa102 "Camera Not Ready" forever.
 					 * Blind-set EVFMode and cycle the candidate EVFOutputDevice
-					 * values (PC+MOBILE2 / MOBILE2 / MOBILE / PC), exactly what
-					 * Canon's own remote apps do; give the camera 3 seconds
-					 * between kicks. USB path is unaffected (first frame returns
+					 * values (TFT+PC / PC / TFT+MOBILE2 / MOBILE2), with the
+					 * rotating index persisted across calls; the total number of
+					 * kicks since the last streamed frame is capped so failing
+					 * preview calls fail fast instead of wedging the session
+					 * mutex. USB path is unaffected (first frame returns
 					 * quickly, single PC kick as before). */
-					if (kick < maxkicks) {
+					if ((kick < maxkicks) && (params->evf_kicks_since_frame < 12)) {
 						uint16_t	bret;
 						val.u16 = 1;
 						bret = ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFMode, &val, PTP_DTC_UINT16);
-						GP_LOG_E ("live view kick %d/%d: EVFMode=1 set -> %04x", kick+1, maxkicks, bret);
-						val.u32 = evfout[kick % evfn];
-						bret = ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &val, PTP_DTC_UINT32);
-						GP_LOG_E ("live view kick %d/%d: EVFOutputDevice=%u set -> %04x", kick+1, maxkicks, val.u32, bret);
+						GP_LOG_E ("live view kick %d: EVFMode=1 set -> %04x", params->evf_kicks_since_frame+1, bret);
+						val.u32 = evfout[params->evf_kick_index % evfn];
+						params->evf_kick_index = (params->evf_kick_index + 1) % evfn;
+						params->evf_kicks_since_frame++;
 						kick++;
+						bret = ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &val, PTP_DTC_UINT32);
+						GP_LOG_E ("live view kick %d: EVFOutputDevice=%u set -> %04x", params->evf_kicks_since_frame, val.u32, bret);
+						evf_set = val.u32;
 						try = 0;
 						ptp_check_eos_events (params);
 						event_start = time_now();
 						continue;
+					}
+					if (params->evf_kicks_since_frame < 12)
+						params->evf_kicks_since_frame = 12;	/* stop kicking, fail fast */
+					if (!params->evf_gaveup_logged) {
+						params->evf_gaveup_logged = 1;
+						GP_LOG_E ("LensLink live view: no stream after %d kicks (last rc=0x%04x). "
+							  "Check that Wireless remote control (EOS Utility) is still armed "
+							  "on the camera, then use Retry.", params->evf_kicks_since_frame, ret);
 					}
 				}
 				C_PTP_MSG (ret, "get_viewfinder_image failed");
@@ -3812,6 +3855,12 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 						}
 						free (data);
 						params->evf_armed = 1;	/* stream is up; stop re-arming on every call */
+						params->evf_kick_index = 0;
+						params->evf_kicks_since_frame = 0;
+						params->evf_gaveup_logged = 0;
+						if (evf_set != 0)
+							params->evf_out_working = evf_set;
+						GP_LOG_E ("LensLink live view: STREAMING (EVFOutputDevice=%u)", evf_set);
 						SET_CONTEXT_P(params, NULL);
 						return GP_OK;
 					}
@@ -6293,8 +6342,17 @@ camera_trigger_canon_eos_capture (Camera *camera, GPContext *context)
 			ptp_check_eos_events (params);
 			/* NB: no error is returned in case of button == 7, which means
 			 * the timer is still working, but no AF fail has been reported */
-			if (button < 4)
-				return GP_ERROR;
+			if (button < 4) {
+				/* LensLink: the full press+release has already fired; over
+				 * PTP/IP the Button focus event may simply never arrive.
+				 * Returning an error here made the app report "capture
+				 * failed" while the camera had actually taken the picture
+				 * ("taken but not saved"). Proceed optimistically instead:
+				 * the caller's object-wait loop returns the new file, or a
+				 * definitive error if no object was created. */
+				GP_LOG_E ("EOS M: no focus confirmation event (button=%d) — "
+					  "continuing, waiting for the object event", button);
+			}
 		}
 	} else {
 		C_PTP_REP_MSG (ptp_canon_eos_capture (params, &result),

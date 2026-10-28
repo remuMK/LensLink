@@ -3999,6 +3999,24 @@ struct _PTPParams {
 	 * call would restart the stream); zeroed together with CameraPrivateLibrary. */
 	int			evf_armed;
 
+	/* LensLink: live-view arming diagnostics and fast-fail state.
+	 * evf_prop_requested: EVFMode/EVFOutputDevice were pushed into the event
+	 *   cache via EOS_RequestDevicePropValue once (over PTP/IP the cache
+	 *   would otherwise stay empty and every getdevicepropdesc fails).
+	 * evf_kick_index: rotating EVFOutputDevice candidate index, persistent
+	 *   across capture_preview calls so consecutive calls try different
+	 *   candidates instead of repeating the same sequence.
+	 * evf_kicks_since_frame: failed kicks since the last streamed frame;
+	 *   beyond a cap the kicks stop and preview fails fast.
+	 * evf_out_working: EVFOutputDevice value that produced a stream
+	 *   (0 = unknown); pre-set on the next call for instant re-arm.
+	 * evf_gaveup_logged: one-shot "no stream after N kicks" summary flag. */
+	int			evf_prop_requested;
+	unsigned		evf_kick_index;
+	unsigned		evf_kicks_since_frame;
+	unsigned		evf_out_working;
+	int			evf_gaveup_logged;
+
 	/* PTP: caching time for properties, default 2 */
 	int			cachetime;
 

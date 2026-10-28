@@ -51,6 +51,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.GridView
@@ -151,6 +152,7 @@ fun FilesScreen() {
     val connection by repo.connection.collectAsStateWithLifecycle()
     val progress by repo.downloadProgress.collectAsStateWithLifecycle()
     val cachedSeed by repo.cachedFiles.collectAsStateWithLifecycle()
+    val filesVersion by repo.filesVersion.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
     val context = LocalContext.current
@@ -206,6 +208,12 @@ fun FilesScreen() {
         }
     }
 
+    // The card content changed underneath us (e.g. a capture taken on the
+    // Viewfinder tab) — reload so the new file shows up, sorted correctly.
+    LaunchedEffect(filesVersion) {
+        if (filesVersion > 0 && connection is ConnState.Connected) reload()
+    }
+
     // Fetch size/date metadata sequentially once per listing; each arrival
     // re-sorts the view automatically (sorting reads withMetadata).
     // Cached entries cost nothing (read-through, persisted on disk).
@@ -233,29 +241,19 @@ fun FilesScreen() {
         sortFiles(filterFiles(state.files, state.media), state.withMetadata.toMap(), state.sort)
     }
 
-    // Changing the sort/filter must NOT throw the user back to the start of
-    // the list: remember which item sat at the top of the viewport and put it
-    // back at the same pixel offset once the list re-orders.
-    var scrollAnchor by remember { mutableStateOf<Pair<String, Int>?>(null) }
-
-    fun captureAnchor() {
-        scrollAnchor = if (state.grid) {
-            visible.getOrNull(gridState.firstVisibleItemIndex)
-                ?.let { it.fullPath to gridState.firstVisibleItemScrollOffset }
-        } else {
-            visible.getOrNull(listState.firstVisibleItemIndex)
-                ?.let { it.fullPath to listState.firstVisibleItemScrollOffset }
-        }
+    // Re-sorting / re-filtering intentionally restarts the viewport at the
+    // top: index 0 is the most relevant item under the chosen order (the
+    // newest photo under "Newest first", the first match of the filter).
+    LaunchedEffect(state.sort, state.media) {
+        if (state.grid) gridState.scrollToItem(0) else listState.scrollToItem(0)
     }
 
     fun setSort(mode: SortMode) {
-        captureAnchor()
         state.sort = mode
         prefs.edit().putString(PREF_SORT, mode.name).apply()
     }
 
     fun setMedia(filter: MediaFilter) {
-        captureAnchor()
         state.media = filter
         prefs.edit().putString(PREF_MEDIA, filter.name).apply()
     }
@@ -264,15 +262,6 @@ fun FilesScreen() {
         val next = !state.grid
         state.grid = next
         prefs.edit().putBoolean(PREF_GRID, next).apply()
-    }
-
-    LaunchedEffect(state.sort, state.media) {
-        val anchor = scrollAnchor ?: return@LaunchedEffect
-        scrollAnchor = null
-        val newIndex = visible.indexOfFirst { it.fullPath == anchor.first }
-        if (newIndex < 0) return@LaunchedEffect
-        if (state.grid) gridState.scrollToItem(newIndex, anchor.second)
-        else listState.scrollToItem(newIndex, anchor.second)
     }
 
     fun downloading(file: CameraFile) {
@@ -360,6 +349,12 @@ fun FilesScreen() {
                     shape = SegmentedButtonDefaults.itemShape(
                         index = index,
                         count = MediaFilter.entries.size,
+                    ),
+                    // unmistakable selected marker: the filled primary segment
+                    // (plus the default check icon in the icon slot)
+                    colors = SegmentedButtonDefaults.colors(
+                        activeContainerColor = MaterialTheme.colorScheme.primary,
+                        activeContentColor = MaterialTheme.colorScheme.onPrimary,
                     ),
                 ) {
                     Text(
@@ -508,11 +503,17 @@ private fun sortFiles(
     SortMode.NAME_DESC -> files.sortedWith(compareByDescending { it.name })
     // mtime is the primary key, name the stable tiebreaker, so partially
     // loaded metadata cannot scramble the order between recompositions.
+    // When the camera reports no timestamp (mtime missing or 0 — Canon over
+    // PTP/IP often does) the sequential file name keeps DATE sorts
+    // meaningful instead of collapsing both directions into the same
+    // name-ascending order ("newest first" that shows the oldest on top).
     SortMode.DATE_DESC -> files.sortedWith(
-        compareByDescending<CameraFile> { meta[it.fullPath]?.mtimeSec ?: 0L }.thenBy { it.name },
+        compareByDescending<CameraFile> { meta[it.fullPath]?.mtimeSec?.takeIf { m -> m > 0 } ?: 0L }
+            .thenByDescending { it.name },
     )
     SortMode.DATE_ASC -> files.sortedWith(
-        compareBy<CameraFile> { meta[it.fullPath]?.mtimeSec ?: 0L }.thenBy { it.name },
+        compareBy<CameraFile> { meta[it.fullPath]?.mtimeSec?.takeIf { m -> m > 0 } ?: 0L }
+            .thenBy { it.name },
     )
     SortMode.SIZE_DESC ->
         files.sortedWith(
@@ -547,6 +548,16 @@ private fun SortMenu(mode: SortMode, onPick: (SortMode) -> Unit) {
             SortMode.entries.forEach { m ->
                 DropdownMenuItem(
                     text = { Text(m.label) },
+                    leadingIcon = if (m == mode) {
+                        {
+                            Icon(
+                                Icons.Rounded.Check,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                    } else null,
                     onClick = { onPick(m); open = false },
                 )
             }

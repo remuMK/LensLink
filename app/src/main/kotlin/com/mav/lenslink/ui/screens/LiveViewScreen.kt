@@ -28,6 +28,7 @@ import androidx.compose.material.icons.rounded.GridOn
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Whatshot
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -87,6 +88,8 @@ fun LiveViewScreen() {
     val zebra by repo.zebra.collectAsStateWithLifecycle()
     val panel by repo.panel.collectAsStateWithLifecycle()
     val fps by repo.fps.collectAsStateWithLifecycle()
+    val previewFails by repo.previewFails.collectAsStateWithLifecycle()
+    val captureStatus by repo.captureState.collectAsStateWithLifecycle()
 
     var showControls by rememberSaveable { mutableStateOf(false) }
     var gridStyle by rememberSaveable { mutableStateOf(GridStyle.THIRDS) }
@@ -125,18 +128,37 @@ fun LiveViewScreen() {
                         .padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Text(
-                        if (connected) "Starting live view…" else "Camera not connected",
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    Text(
-                        if (connected)
-                            "EOS live view boots on the first preview call — this " +
-                                "takes a few seconds and runs at USB2 speed (≈6–10 fps)."
-                        else "Connect on the Connect tab first.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    if (connected && previewFails >= 3) {
+                        Text(
+                            "Live view couldn't start",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        Text(
+                            "The camera answers “not ready”. Make sure Wireless remote control " +
+                                "(EOS Utility) is still armed on the camera, then retry.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        FilledTonalButton(
+                            onClick = { repo.retryLiveView() },
+                            modifier = Modifier.padding(top = 12.dp),
+                        ) {
+                            Text("Retry")
+                        }
+                    } else {
+                        Text(
+                            if (connected) "Starting live view…" else "Camera not connected",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        Text(
+                            if (connected)
+                                "EOS live view boots on the first preview call — this " +
+                                    "takes a few seconds and runs at USB2 speed (≈6–10 fps)."
+                            else "Connect on the Connect tab first.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
 
@@ -191,6 +213,27 @@ fun LiveViewScreen() {
             }
         }
 
+        // -------- capture status ---------------------------------------
+        captureStatus?.let { cs ->
+            Text(
+                text = when {
+                    cs.busy -> "Capturing…"
+                    cs.savedToLabel != null -> "Saved → ${cs.savedToLabel}"
+                    cs.error != null -> cs.error
+                    else -> "Captured ${cs.file?.name.orEmpty()}"
+                },
+                style = MaterialTheme.typography.labelMedium,
+                color = when {
+                    cs.busy -> MaterialTheme.colorScheme.onSurfaceVariant
+                    cs.error != null -> MaterialTheme.colorScheme.error
+                    else -> MaterialTheme.colorScheme.primary
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp),
+            )
+        }
+
         // -------- control bar ------------------------------------------
         Row(
             Modifier
@@ -210,7 +253,7 @@ fun LiveViewScreen() {
             }
 
             ShutterButton(
-                enabled = connected,
+                enabled = connected && captureStatus?.busy != true,
                 onClick = { repo.captureAsync() },
             )
 
