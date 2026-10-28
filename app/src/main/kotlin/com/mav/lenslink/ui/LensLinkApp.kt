@@ -29,11 +29,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.mav.lenslink.appContainer
 import com.mav.lenslink.models.ConnState
+import com.mav.lenslink.models.Transport
 import com.mav.lenslink.ui.screens.ConnectScreen
 import com.mav.lenslink.ui.screens.FilesScreen
 import com.mav.lenslink.ui.screens.LiveViewScreen
@@ -62,6 +64,11 @@ fun LensLinkApp() {
     var selectedTab by rememberSaveable { mutableStateOf(Tab.CONNECT) }
     val snackbar = remember { SnackbarHostState() }
 
+    // Keeps each tab's saveable state (the Files list/grid scroll positions,
+    // text fields, …) while another tab is shown — without this every tab
+    // switch recomposed from scratch and the files list restarted at the top.
+    val tabStateHolder = rememberSaveableStateHolder()
+
     LaunchedEffect(Unit) {
         container.usb.scan()
     }
@@ -77,8 +84,8 @@ fun LensLinkApp() {
 
     val conState by repository.connection.collectAsStateWithLifecycle()
     LaunchedEffect(conState) {
-        when {
-            conState is ConnState.Connected -> {
+        when (val s = conState) {
+            is ConnState.Connected -> {
                 /*
                  * Files first, live view opt-in: jumping straight to the
                  * viewfinder blanked through the EOS's camera-side screen
@@ -86,14 +93,22 @@ fun LensLinkApp() {
                  * remote viewfinder at all. The Files tab also paints
                  * instantly from the persisted thumbnail/metadata caches.
                  */
+                // remember the Wi-Fi endpoint under the camera's model name
+                // so the Connect tab can offer a one-tap connect afterwards
+                if (s.transport == Transport.WIFI) {
+                    repository.lastWifiEndpoint?.let { (host, port) ->
+                        container.savedCameras.recordSuccess(host, port, s.info.model)
+                    }
+                }
                 selectedTab = Tab.FILES
             }
-            conState is ConnState.Failed -> selectedTab = Tab.CONNECT
-            conState is ConnState.Lost -> {
+            is ConnState.Failed -> selectedTab = Tab.CONNECT
+            is ConnState.Lost -> {
                 // probe-detected drop: back to Connect so the Lost card with
                 // its one-tap reconnect is visible
                 selectedTab = Tab.CONNECT
             }
+            else -> Unit
         }
     }
 
@@ -140,10 +155,12 @@ fun LensLinkApp() {
             snackbarHost = { SnackbarHost(snackbar) },
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
-                when (selectedTab) {
-                    Tab.CONNECT -> ConnectScreen()
-                    Tab.VIEWFINDER -> LiveViewScreen()
-                    Tab.FILES -> FilesScreen()
+                tabStateHolder.SaveableStateProvider(selectedTab.name) {
+                    when (selectedTab) {
+                        Tab.CONNECT -> ConnectScreen()
+                        Tab.VIEWFINDER -> LiveViewScreen()
+                        Tab.FILES -> FilesScreen()
+                    }
                 }
             }
         }

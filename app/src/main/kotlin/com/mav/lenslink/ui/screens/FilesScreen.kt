@@ -5,9 +5,13 @@
  *     thumbnails on disk), and only NEW files hit the SD card on refresh
  *   • list/grid view toggle + sort menu — both persisted between sessions
  *   • Photos / Videos segmented filter (also persisted)
- *   • re-sorting / re-filtering keeps the viewport anchored on the same
- *     file instead of jumping back to the start of the list
+ *   • tab switches keep the list/grid scroll position (saveable state in the
+ *     tab switcher); re-sorting / re-filtering restarts at the top, where
+ *     index 0 is the most relevant item under the chosen order
  *   • tap = fullscreen viewer, long-press = enter selection mode (hold-one)
+ *   • fullscreen viewer: swipe left/right pages to the previous/next file of
+ *     the list it was opened from (thumbnail painted instantly, neighbours
+ *     pre-warmed)
  *   • PTP thumbnail chips (GetObjectThumb, disk cached)
  *   • fullscreen in-app viewer: cached thumbnail first, streams the original
  *     from the camera into a PRIVATE cache (no public download), decodes
@@ -22,9 +26,18 @@ package com.mav.lenslink.ui.screens
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.util.Log
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
@@ -97,7 +110,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.AwaitPointerEventScope
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
@@ -114,6 +129,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -271,14 +287,6 @@ fun FilesScreen() {
         }
     }
 
-    state.viewer?.let { target ->
-        FullscreenViewer(
-            file = target,
-            info = state.withMetadata[target.fullPath],
-            onDismiss = { state.viewer = null },
-        )
-    }
-
     // The visible list = media filter + sort. `metaVersion` re-runs this as
     // metadata lands so date/size sorts settle correctly.
     val metaVersion = state.withMetadata.size
@@ -289,8 +297,39 @@ fun FilesScreen() {
     // Re-sorting / re-filtering intentionally restarts the viewport at the
     // top: index 0 is the most relevant item under the chosen order (the
     // newest photo under "Newest first", the first match of the filter).
+    // NOT on the first composition though — the tab switcher restores the
+    // saveable list/grid scroll state on re-entry, and an unconditional
+    // reset would defeat that.
+    var lastSortMedia by remember { mutableStateOf(state.sort to state.media) }
     LaunchedEffect(state.sort, state.media) {
-        if (state.grid) gridState.scrollToItem(0) else listState.scrollToItem(0)
+        val current = state.sort to state.media
+        if (current != lastSortMedia) {
+            lastSortMedia = current
+            if (state.grid) gridState.scrollToItem(0) else listState.scrollToItem(0)
+        }
+    }
+
+    // fullscreen viewer — horizontal swipe pages through the visible list
+    state.viewer?.let { target ->
+        val index = visible.indexOfFirst { it.fullPath == target.fullPath }
+        FullscreenViewer(
+            file = target,
+            info = state.withMetadata[target.fullPath],
+            positionText = if (index >= 0 && visible.size > 1) {
+                "${index + 1} / ${visible.size}"
+            } else null,
+            neighbors = if (index >= 0) listOfNotNull(
+                visible.getOrNull(index - 1),
+                visible.getOrNull(index + 1),
+            ) else emptyList(),
+            onPrev = { if (index > 0) state.viewer = visible[index - 1] },
+            onNext = {
+                if (index in 0 until visible.lastIndex) {
+                    state.viewer = visible[index + 1]
+                }
+            },
+            onDismiss = { state.viewer = null },
+        )
     }
 
     fun setSort(mode: SortMode) {
@@ -939,21 +978,124 @@ private fun MetaLine(label: String, value: String) {
  * streams from the camera into the private viewer cache. Metadata shows up
  * immediately from the (persisted) PTP object info; EXIF lines join once the
  * original is decoded. The image supports pinch-zoom/pan, double-tap zoom
- * and a 90°-step rotate; Download copies the original to the phone's
- * Downloads folder (with its success notification).
+ * and a 90°-step rotate; a horizontal swipe pages to the previous/next file
+ * of the list the viewer was opened from; Download copies the original to
+ * the phone's Downloads folder (with its success notification).
  */
 @Composable
 private fun FullscreenViewer(
     file: CameraFile,
     info: CameraFileInfo?,
+    positionText: String?,
+    neighbors: List<CameraFile>,
+    onPrev: () -> Unit,
+    onNext: () -> Unit,
     onDismiss: () -> Unit,
+) {
+    val repo = appContainer().repository
+    val scope = rememberCoroutineScope()
+
+    /** Slide direction of the paging transition: +1 next, -1 previous. */
+    var navDir by remember { mutableIntStateOf(1) }
+    val page: (Int) -> Unit = { delta ->
+        navDir = delta
+        if (delta > 0) onNext() else onPrev()
+    }
+
+    // Warm the neighbours' thumbnails so a swipe paints instantly instead of
+    // waiting for a PTP thumb round-trip on every page.
+    val neighborKey = neighbors.joinToString("\u0000") { it.fullPath }
+    LaunchedEffect(neighborKey) {
+        neighbors.forEach { neighbor ->
+            scope.launch { runCatching { repo.thumbnailFor(neighbor) } }
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(
+            color = MaterialTheme.colorScheme.scrim,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                // header: close | name | folder · position
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            Icons.Rounded.Close,
+                            contentDescription = "Close",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            file.name,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        Text(
+                            listOfNotNull(file.folder, positionText?.let { "·  $it" })
+                                .joinToString("   "),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+
+                // one AnimatedContent slot per file: each page owns its own
+                // thumbnail/bitmap/zoom state, the old page slides out while
+                // the new one streams in
+                AnimatedContent(
+                    targetState = file,
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    transitionSpec = {
+                        val dir = if (navDir >= 0) 1 else -1
+                        (slideInHorizontally(tween(220)) { it / 3 * dir } +
+                            fadeIn(tween(220))) togetherWith
+                            (slideOutHorizontally(tween(220)) { it / 3 * -dir } +
+                                fadeOut(tween(220)))
+                    },
+                    label = "viewerPage",
+                ) { pageFile ->
+                    ViewerPage(file = pageFile, info = info, onPage = page)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One viewer page — all state here is per file (AnimatedContent composes a
+ * separate instance per target, so neighbouring pages keep their decoded
+ * bitmaps during the slide): two-stage load (thumbnail → streamed original),
+ * metadata lines, pinch-zoom/pan, double-tap zoom, rotate, and the rotate +
+ * download buttons floating over the image.
+ */
+@Composable
+private fun ViewerPage(
+    file: CameraFile,
+    info: CameraFileInfo?,
+    onPage: (Int) -> Unit,
 ) {
     val repo = appContainer().repository
     val scope = rememberCoroutineScope()
 
     // Metadata must not wait for the (multi-second) transfer.
     var ptpLines by remember(file.fullPath) { mutableStateOf(info.viewerLines(file)) }
-    var exifLines by remember(file.fullPath) { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
+    var exifLines by remember(file.fullPath) {
+        mutableStateOf<List<Pair<String, String>>>(emptyList())
+    }
 
     // stage 1: cached thumbnail (memory/disk) — paints immediately
     var thumb by remember(file.fullPath) { mutableStateOf<ImageBitmap?>(null) }
@@ -990,190 +1132,230 @@ private fun FullscreenViewer(
         pan = if (next > 1f) pan + panChange else Offset.Zero
     }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-    ) {
-        Surface(
-            color = MaterialTheme.colorScheme.scrim,
-            modifier = Modifier.fillMaxSize(),
+    Column(Modifier.fillMaxSize()) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                // the page-swipe sits on the image AREA, not the zoomable
+                // Image: as an ancestor handler it sees Main-pass events
+                // after the inner ones, so anything transformable claims
+                // (zoom, pan while zoomed) aborts the swipe — and at scale 1
+                // (where canPan refuses pans) the horizontal drag reaches it
+                // unconsumed and pages
+                .pointerInput(file.fullPath) {
+                    detectHorizontalPage(
+                        width = size.width.toFloat(),
+                        onPage = onPage,
+                    )
+                },
+            contentAlignment = Alignment.Center,
         ) {
-            Column(Modifier.fillMaxSize()) {
-                // header: close | name | rotate | download
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconButton(onClick = onDismiss) {
-                        Icon(
-                            Icons.Rounded.Close,
-                            contentDescription = "Close",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                        )
-                    }
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            file.name,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                        Text(
-                            file.folder,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.bodySmall,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    IconButton(onClick = { rotation = (rotation + 90) % 360 }) {
-                        Icon(
-                            Icons.Rounded.RotateRight,
-                            contentDescription = "Rotate",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                        )
-                    }
-                    IconButton(
-                        onClick = {
-                            if (saving) return@IconButton
-                            saving = true
-                            scope.launch {
-                                runCatching { repo.downloadToPublic(file.folder, file.name) }
-                                saving = false
-                            }
-                        },
-                    ) {
-                        if (saving) {
-                            CircularProgressIndicator(
-                                Modifier.size(18.dp),
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                        } else {
-                            Icon(
-                                Icons.Rounded.Download,
-                                contentDescription = "Download",
-                                tint = MaterialTheme.colorScheme.onSurface,
-                            )
+            val bmp = bitmap
+            val t = thumb
+            when {
+                bmp != null -> Image(
+                    bitmap = bmp,
+                    contentDescription = file.name,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                            rotationZ = rotation.toFloat()
+                            translationX = pan.x
+                            translationY = pan.y
                         }
-                    }
-                }
-
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
+                        .transformable(
+                            transform,
+                            // at scale 1 horizontal pans belong to the
+                            // page-swipe, not the image
+                            canPan = { scale > 1.01f },
+                        )
+                        .pointerInput(file.fullPath) {
+                            detectTapGestures(
+                                onDoubleTap = {
+                                    if (scale > 1.01f) {
+                                        scale = 1f
+                                        pan = Offset.Zero
+                                    } else {
+                                        scale = 2.5f
+                                    }
+                                },
+                            )
+                        },
+                )
+                t != null -> Box(
+                    Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center,
                 ) {
-                    val bmp = bitmap
-                    val t = thumb
-                    when {
-                        bmp != null -> Image(
-                            bitmap = bmp,
-                            contentDescription = file.name,
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .graphicsLayer {
-                                    scaleX = scale
-                                    scaleY = scale
-                                    rotationZ = rotation.toFloat()
-                                    translationX = pan.x
-                                    translationY = pan.y
-                                }
-                                .transformable(transform)
-                                .pointerInput(file.fullPath) {
-                                    detectTapGestures(
-                                        onDoubleTap = {
-                                            if (scale > 1.01f) {
-                                                scale = 1f
-                                                pan = Offset.Zero
-                                            } else {
-                                                scale = 2.5f
-                                            }
-                                        },
-                                    )
-                                },
-                        )
-                        t != null -> Box(
-                            Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Image(
-                                bitmap = t,
-                                contentDescription = file.name,
-                                contentScale = ContentScale.Fit,
-                                modifier = Modifier.fillMaxSize(),
-                            )
-                            Surface(
-                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier
-                                    .align(Alignment.BottomCenter)
-                                    .padding(16.dp),
-                            ) {
-                                Row(
-                                    Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                ) {
-                                    if (busy) {
-                                        CircularProgressIndicator(Modifier.size(16.dp))
-                                        Text(
-                                            "Streaming full resolution…",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                        )
-                                    } else if (file.isMovie) {
-                                        Text(
-                                            "Video — use the download button to save it.",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        busy -> Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center,
-                        ) {
-                            CircularProgressIndicator(Modifier.size(28.dp))
-                            Spacer(Modifier.height(10.dp))
-                            Text(
-                                "Streaming from camera…",
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                        }
-                        else -> Text(
-                            "Could not load this file for preview.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-
-                // metadata panel — PTP object info instantly, EXIF once decoded
-                val metaLines = ptpLines + exifLines
-                if (metaLines.isNotEmpty()) {
+                    Image(
+                        bitmap = t,
+                        contentDescription = file.name,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize(),
+                    )
                     Surface(
-                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(8.dp)
-                            .clip(RoundedCornerShape(14.dp)),
+                            .align(Alignment.BottomCenter)
+                            .padding(16.dp),
                     ) {
-                        Column(
-                            Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        Row(
+                            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            metaLines.forEach { (label, value) ->
-                                MetaLine(label, value)
+                            if (busy) {
+                                CircularProgressIndicator(Modifier.size(16.dp))
+                                Text(
+                                    "Streaming full resolution…",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                            } else if (file.isMovie) {
+                                Text(
+                                    "Video — use the download button to save it.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
                             }
                         }
                     }
                 }
+                busy -> Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    CircularProgressIndicator(Modifier.size(28.dp))
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "Streaming from camera…",
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+                else -> Text(
+                    "Could not load this file for preview.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            // rotate + download float over the image, top-right
+            Row(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                IconButton(onClick = { rotation = (rotation + 90) % 360 }) {
+                    Icon(
+                        Icons.Rounded.RotateRight,
+                        contentDescription = "Rotate",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        if (saving) return@IconButton
+                        saving = true
+                        scope.launch {
+                            runCatching { repo.downloadToPublic(file.folder, file.name) }
+                            saving = false
+                        }
+                    },
+                ) {
+                    if (saving) {
+                        CircularProgressIndicator(
+                            Modifier.size(18.dp),
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    } else {
+                        Icon(
+                            Icons.Rounded.Download,
+                            contentDescription = "Download",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+        }
+
+        // metadata panel — PTP object info instantly, EXIF once decoded
+        val metaLines = ptpLines + exifLines
+        if (metaLines.isNotEmpty()) {
+            Surface(
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp)
+                    .clip(RoundedCornerShape(14.dp)),
+            ) {
+                Column(
+                    Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    metaLines.forEach { (label, value) ->
+                        MetaLine(label, value)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Horizontal page-swipe for the fullscreen viewer. Consumes only
+ * single-finger, horizontal-dominant drags and fires [onPage] (+1 next /
+ * -1 previous) when the release clears a distance or fling-velocity
+ * threshold. Multi-touch (pinch-zoom) and any gesture already claimed by an
+ * inner handler (image pan while zoomed) are left alone.
+ */
+private suspend fun AwaitPointerEventScope.detectHorizontalPage(
+    width: Float,
+    onPage: (Int) -> Unit,
+) {
+    val slop = viewConfiguration.touchSlop * 2f
+    awaitEachGesture {
+        val down = awaitFirstDown()
+        var totalX = 0f
+        var totalY = 0f
+        var locked = false
+        var vx = 0f
+        var lastMs = down.uptimeMillis
+        while (true) {
+            val event = awaitPointerEvent()
+            val changes = event.changes
+            // second finger: hand the gesture over to pinch-zoom
+            if (changes.size > 1) return@awaitEachGesture
+            // an inner handler (transformable pan/zoom) claimed the gesture
+            if (changes.any { it.isConsumed }) return@awaitEachGesture
+            val change = changes.first()
+            val dx = change.positionChange().x
+            val dy = change.positionChange().y
+            totalX += dx
+            totalY += dy
+            val dt = (change.uptimeMillis - lastMs).coerceAtLeast(1L)
+            // px/s, exponentially smoothed
+            vx = vx * 0.7f + (dx / dt * 1000f) * 0.3f
+            lastMs = change.uptimeMillis
+            if (!locked) {
+                if (abs(totalX) > slop && abs(totalX) > abs(totalY)) {
+                    locked = true
+                    change.consume()
+                } else if (abs(totalY) > slop) {
+                    return@awaitEachGesture
+                }
+            } else {
+                change.consume()
+            }
+            if (!change.pressed) {
+                if (locked && (abs(totalX) > width / 5f || abs(vx) > 1400f)) {
+                    // finger left = next, finger right = previous
+                    onPage(if (totalX < 0) 1 else -1)
+                }
+                return@awaitEachGesture
             }
         }
     }

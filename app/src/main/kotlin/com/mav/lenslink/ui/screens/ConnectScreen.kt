@@ -24,14 +24,19 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.LinkOff
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.Usb
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material.icons.rounded.WifiOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -39,10 +44,12 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -56,8 +63,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mav.lenslink.appContainer
+import com.mav.lenslink.models.CameraAddress
 import com.mav.lenslink.models.CameraInfo
 import com.mav.lenslink.models.ConnState
+import com.mav.lenslink.models.SavedCamera
 import com.mav.lenslink.models.Transport
 import kotlinx.coroutines.delay
 
@@ -113,6 +122,8 @@ fun ConnectScreen() {
                 permitted.contains(usbDevice!!.deviceId.toString()),
             busy = connection is ConnState.Connecting,
         )
+
+        SavedCamerasCard()
 
         WifiCard()
     }
@@ -360,6 +371,245 @@ private fun UsbCard(device: UsbDevice?, hasPermission: Boolean, busy: Boolean) {
             }
         }
     }
+}
+
+/* ---------------------------------------------------------------- */
+/* saved cameras — one-tap connect entries                          */
+/* ---------------------------------------------------------------- */
+
+/**
+ * Saved Wi-Fi cameras (auto-registered on every successful connect, or added
+ * manually): one-tap connect on the primary address, edit dialog for the
+ * name/identifier and any number of addresses, instant delete.
+ */
+@Composable
+private fun SavedCamerasCard() {
+    val container = appContainer()
+    val repository = container.repository
+    val connection by repository.connection.collectAsStateWithLifecycle()
+    val prefs = LocalContext.current.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    var editing by remember { mutableStateOf<SavedCamera?>(null) }
+    var adding by remember { mutableStateOf(false) }
+    val busy = connection is ConnState.Connecting
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Rounded.Star,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.width(10.dp))
+                Text("Saved cameras", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { adding = true }) {
+                    Icon(Icons.Rounded.Add, contentDescription = null)
+                    Spacer(Modifier.width(4.dp))
+                    Text("Add")
+                }
+            }
+
+            if (container.savedCameras.cameras.isEmpty()) {
+                Text(
+                    "No saved cameras yet. Connect over Wi-Fi once — the camera " +
+                        "is saved here automatically for one-tap connect afterwards.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                container.savedCameras.cameras.forEach { cam ->
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                cam.name,
+                                style = MaterialTheme.typography.titleSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                cam.addresses.joinToString("  ·  ") { it.toString() }
+                                    .ifEmpty { "no addresses" },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        FilledTonalButton(
+                            enabled = !busy && cam.addresses.isNotEmpty(),
+                            onClick = {
+                                val address = cam.addresses.first()
+                                // keep the Lost-card reconnect on this endpoint too
+                                prefs.edit()
+                                    .putString(PREF_LAST_HOST, address.host)
+                                    .putInt(PREF_LAST_PORT, address.port)
+                                    .apply()
+                                repository.connectWifi(address.host, address.port)
+                            },
+                        ) {
+                            Icon(Icons.Rounded.Link, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Connect")
+                        }
+                        IconButton(onClick = { editing = cam }) {
+                            Icon(Icons.Rounded.Edit, contentDescription = "Edit")
+                        }
+                        IconButton(onClick = { container.savedCameras.remove(cam.id) }) {
+                            Icon(Icons.Rounded.Delete, contentDescription = "Delete")
+                        }
+                    }
+                }
+                Text(
+                    "The first address is used for one-tap connect — edit to add more.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+
+    editing?.let { cam ->
+        EditCameraDialog(camera = cam, onDismiss = { editing = null })
+    }
+    if (adding) {
+        AddCameraDialog(onDismiss = { adding = false })
+    }
+}
+
+@Composable
+private fun EditCameraDialog(camera: SavedCamera, onDismiss: () -> Unit) {
+    val store = appContainer().savedCameras
+    var name by remember { mutableStateOf(camera.name) }
+    var newAddress by remember { mutableStateOf("") }
+    val parsedNew = CameraAddress.parse(newAddress)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit camera") },
+        text = {
+            Column(Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text("Addresses", style = MaterialTheme.typography.labelLarge)
+                camera.addresses.forEachIndexed { index, address ->
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            (if (index == 0) "●  " else "○  ") + address.toString(),
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        IconButton(
+                            onClick = {
+                                camera.addresses.remove(address)
+                                store.save()
+                            },
+                        ) {
+                            Icon(Icons.Rounded.Close, contentDescription = "Remove")
+                        }
+                    }
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = newAddress,
+                        onValueChange = { newAddress = it },
+                        label = { Text("Add IP or IP:port") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        enabled = parsedNew != null && !camera.addresses.contains(parsedNew),
+                        onClick = {
+                            parsedNew?.let { parsed ->
+                                camera.addresses.add(0, parsed)
+                                newAddress = ""
+                                store.save()
+                            }
+                        },
+                    ) {
+                        Text("Add")
+                    }
+                }
+                Text(
+                    "Removing an address makes the next one primary.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val trimmed = name.trim()
+                if (trimmed.isNotEmpty()) camera.name = trimmed
+                store.save()
+                onDismiss()
+            }) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+@Composable
+private fun AddCameraDialog(onDismiss: () -> Unit) {
+    val store = appContainer().savedCameras
+    var name by remember { mutableStateOf("") }
+    var address by remember { mutableStateOf("") }
+    val parsed = CameraAddress.parse(address)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add camera") },
+        text = {
+            Column(Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Name (e.g. \"M50 garden\")") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = address,
+                    onValueChange = { address = it },
+                    label = { Text("IP or IP:port (e.g. 192.168.1.1)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = parsed != null,
+                onClick = {
+                    store.add(name, listOfNotNull(parsed))
+                    onDismiss()
+                },
+            ) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }
 
 /* ---------------------------------------------------------------- */

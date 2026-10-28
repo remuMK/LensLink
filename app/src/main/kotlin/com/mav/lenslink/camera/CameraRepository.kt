@@ -249,6 +249,10 @@ class CameraRepository(context: Context) {
     private var lastWifiHost: String? = null
     private var lastWifiPort = 15740
 
+    /** The last Wi-Fi endpoint a connection was attempted on (host to port). */
+    val lastWifiEndpoint: Pair<String, Int>?
+        get() = lastWifiHost?.let { it to lastWifiPort }
+
     fun connectWifi(host: String, port: Int) {
         lastWifiHost = host
         lastWifiPort = port
